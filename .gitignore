@@ -1,0 +1,9 @@
+.env
+node_modules
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+/backups

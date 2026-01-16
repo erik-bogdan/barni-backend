@@ -1,0 +1,1 @@
+ALTER TABLE "story_transactions" ADD COLUMN "operation_type" text DEFAULT 'story_generation' NOT NULL;

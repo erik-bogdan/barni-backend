@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1768472450102,
+      "tag": "0000_pink_blizzard",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1768476856201,
+      "tag": "0001_uneven_wildside",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1768507279967,
+      "tag": "0002_pale_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1768560039984,
+      "tag": "0003_unknown_tenebrous",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1768562356262,
+      "tag": "0004_unique_white_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1768562715462,
+      "tag": "0005_omniscient_deathstrike",
+      "breakpoints": true
+    }
+  ]
+}
