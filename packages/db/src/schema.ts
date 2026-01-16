@@ -10,6 +10,7 @@ import {
   integer,
   uuid,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 
 export const backupStatus = pgEnum('backup_status', ['running', 'success', 'failed'])
@@ -186,6 +187,8 @@ export const stories = pgTable("stories", {
   audioUpdatedAt: timestamp("audio_updated_at", { withTimezone: true }),
   audioHash: text("audio_hash"),
   model: text("model"), // OpenAI model used for generation
+  coverUrl: text("cover_url"),
+  coverSquareUrl: text("cover_square_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .defaultNow()
@@ -193,6 +196,24 @@ export const stories = pgTable("stories", {
     .notNull(),
   readyAt: timestamp("ready_at", { withTimezone: true }),
 })
+
+export const storyFeedbackType = pgEnum("story_feedback_type", ["like", "sleep", "more"])
+
+export const storyFeedback = pgTable("story_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  storyId: uuid("story_id")
+    .notNull()
+    .references(() => stories.id, { onDelete: "cascade" }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  childId: uuid("child_id")
+    .references(() => children.id, { onDelete: "set null" }),
+  type: storyFeedbackType("type").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  uniqueStoryUser: sql`UNIQUE(${table.storyId}, ${table.userId})`,
+}))
 
 export const billingAddresses = pgTable("billing_addresses", {
   id: uuid("id").defaultRandom().primaryKey(),

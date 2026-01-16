@@ -7,6 +7,7 @@ import {
   children,
   stories,
   storyCreditTransactions,
+  storyFeedback,
 } from "../../packages/db/src/schema"
 import { calcCost, calcAudioCost, getUserCreditBalance } from "../services/credits"
 import { enqueueStoryJob } from "../jobs/queue"
@@ -14,6 +15,7 @@ import { enqueueAudioJob } from "../jobs/audio-queue"
 import { THEMES } from "../services/storyPrompt"
 import { requestStoryAudio, createAudioRepo, buildAudioKey } from "../services/audio"
 import { getPresignedUrl } from "../services/s3"
+import { buildCoverKey, buildCoverSquareKey } from "../services/cover/coverService"
 
 async function requireSession(headers: Headers, set: { status: number }) {
   const session = await auth.api.getSession({ headers })
@@ -161,6 +163,8 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           id: stories.id,
           title: stories.title,
           previewUrl: stories.previewUrl,
+          coverUrl: stories.coverUrl,
+          coverSquareUrl: stories.coverSquareUrl,
           createdAt: stories.createdAt,
           status: stories.status,
           theme: stories.theme,
@@ -174,18 +178,52 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         .limit(limit)
         .offset(offset)
 
+      // Generate presigned URLs for covers
+      const items = await Promise.all(
+        rows.map(async (r) => {
+          let coverUrl = r.coverUrl
+          let coverSquareUrl = r.coverSquareUrl
+
+          // Generate presigned URL for main cover if it exists
+          if (coverUrl) {
+            try {
+              const coverKey = buildCoverKey(r.id)
+              coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+            } catch (error) {
+              console.error(`Failed to generate presigned URL for cover ${r.id}:`, error)
+              // Fallback to original URL
+            }
+          }
+
+          // Generate presigned URL for square cover if it exists
+          if (coverSquareUrl) {
+            try {
+              const coverSquareKey = buildCoverSquareKey(r.id)
+              coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+            } catch (error) {
+              console.error(`Failed to generate presigned URL for square cover ${r.id}:`, error)
+              // Fallback to original URL
+            }
+          }
+
+          return {
+            id: r.id,
+            title: r.title,
+            preview_url: r.previewUrl,
+            cover_url: coverUrl,
+            cover_square_url: coverSquareUrl,
+            created_at: r.createdAt,
+            status: r.status,
+            theme: r.theme,
+            mood: r.mood,
+            length: r.length,
+            error_message: r.errorMessage,
+          }
+        }),
+      )
+
       return {
-        items: rows.map((r) => ({
-          id: r.id,
-          title: r.title,
-          preview_url: r.previewUrl,
-          created_at: r.createdAt,
-          status: r.status,
-          theme: r.theme,
-          mood: r.mood,
-          length: r.length,
-          error_message: r.errorMessage,
-        })),
+        items,
         pagination: {
           page,
           limit,
@@ -256,6 +294,8 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           summary: stories.summary,
           text: stories.text,
           previewUrl: stories.previewUrl,
+          coverUrl: stories.coverUrl,
+          coverSquareUrl: stories.coverSquareUrl,
           createdAt: stories.createdAt,
           status: stories.status,
           theme: stories.theme,
@@ -291,12 +331,38 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         }
       }
 
+      // Generate presigned URLs for covers if they exist
+      let coverUrl = row.coverUrl
+      let coverSquareUrl = row.coverSquareUrl
+
+      if (coverUrl) {
+        try {
+          const coverKey = buildCoverKey(row.id)
+          coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+        } catch (error) {
+          console.error(`Failed to generate presigned URL for cover ${row.id}:`, error)
+          // Fallback to original URL
+        }
+      }
+
+      if (coverSquareUrl) {
+        try {
+          const coverSquareKey = buildCoverSquareKey(row.id)
+          coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+        } catch (error) {
+          console.error(`Failed to generate presigned URL for square cover ${row.id}:`, error)
+          // Fallback to original URL
+        }
+      }
+
       return {
         id: row.id,
         title: row.title,
         summary: row.summary,
         text: row.text,
         preview_url: row.previewUrl,
+        cover_url: coverUrl,
+        cover_square_url: coverSquareUrl,
         created_at: row.createdAt,
         status: row.status,
         theme: row.theme,
@@ -384,5 +450,74 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         force: t.Optional(t.Boolean()),
       }),
     },
+  )
+  .post(
+    "/stories/:storyId/feedback",
+    async ({ params, body, request, set }) => {
+      const session = await requireSession(request.headers, set)
+      if (!session) return { error: "Unauthorized" }
+
+      const storyId = params.storyId
+      const userId = session.user.id
+      const { type } = body
+
+      // Validate feedback type
+      if (!["like", "sleep", "more"].includes(type)) {
+        set.status = 400
+        return { error: "Invalid feedback type" }
+      }
+
+      // Check if story exists and belongs to user
+      const [story] = await db
+        .select({ id: stories.id, childId: stories.childId })
+        .from(stories)
+        .where(and(eq(stories.id, storyId), eq(stories.userId, userId)))
+        .limit(1)
+
+      if (!story) {
+        set.status = 404
+        return { error: "Story not found" }
+      }
+
+      // Check if feedback already exists
+      const [existing] = await db
+        .select({ id: storyFeedback.id, type: storyFeedback.type })
+        .from(storyFeedback)
+        .where(and(eq(storyFeedback.storyId, storyId), eq(storyFeedback.userId, userId)))
+        .limit(1)
+
+      if (existing) {
+        return {
+          ok: true,
+          alreadySubmitted: true,
+          type: existing.type,
+        }
+      }
+
+      // Insert feedback
+      const [feedback] = await db
+        .insert(storyFeedback)
+        .values({
+          storyId,
+          userId,
+          childId: story.childId,
+          type: type as "like" | "sleep" | "more",
+        })
+        .returning({ id: storyFeedback.id, type: storyFeedback.type })
+
+      return {
+        ok: true,
+        alreadySubmitted: false,
+        type: feedback.type,
+      }
+    },
+    {
+      body: t.Object({
+        type: t.Union([t.Literal("like"), t.Literal("sleep"), t.Literal("more")]),
+      }),
+      params: t.Object({
+        storyId: t.String(),
+      }),
+    }
   )
 

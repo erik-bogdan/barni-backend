@@ -48,7 +48,7 @@ export type StoryRepo = {
       model?: string
     },
   ): Promise<void>
-  savePreview(id: string, payload: { previewUrl: string; readyAt: Date }): Promise<void>
+    savePreview(id: string, payload: { previewUrl: string | null; readyAt: Date }): Promise<void>
   saveStoryTransaction(
     storyId: string,
     payload: {
@@ -150,7 +150,7 @@ export function createStoryRepo(
       await db
         .update(stories)
         .set({
-          previewUrl: payload.previewUrl,
+          previewUrl: payload.previewUrl ?? null,
           readyAt: payload.readyAt,
           status: "ready",
         })

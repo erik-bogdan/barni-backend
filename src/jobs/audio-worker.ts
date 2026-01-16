@@ -7,7 +7,7 @@ import { AUDIO_QUEUE } from "./audio-queue"
 
 const rabbitUrl = process.env.RABBITMQ_URL || "amqp://localhost:5672"
 
-const repo = createAudioRepo(db)
+const audioRepo = createAudioRepo(db)
 
 type AudioJobPayload = {
   jobId: string
@@ -35,7 +35,7 @@ async function startAudioWorker() {
       await processStoryAudioJob(
         { storyId: payload.storyId, userId: payload.userId, force: payload.force },
         {
-          repo,
+          repo: audioRepo,
           s3: { uploadBuffer, buildPublicUrl },
         },
       )
@@ -47,7 +47,7 @@ async function startAudioWorker() {
       let payload: AudioJobPayload | null = null
       try {
         payload = JSON.parse(msg.content.toString()) as AudioJobPayload
-        await repo.updateAudio(payload.storyId, {
+        await audioRepo.updateAudio(payload.storyId, {
           audioStatus: "failed",
           audioError: error?.message ?? "Audio generation failed",
           audioUpdatedAt: new Date(),

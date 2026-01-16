@@ -10,7 +10,6 @@ import { stories, storyCreditTransactions } from "../../packages/db/src/schema"
 import { db } from "../lib/db"
 import { buildPublicUrl, uploadBuffer } from "./s3"
 import { calcAudioCost, getUserCreditBalance } from "./credits"
-import { eq, sql } from "drizzle-orm"
 
 export const AUDIO_VOICE_ID = "scmhl57lfsXIkyLMdk8s"
 export const AUDIO_MODEL_ID = "eleven_v3"

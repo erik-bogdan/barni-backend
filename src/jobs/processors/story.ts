@@ -36,7 +36,7 @@ export type StoryProcessorDeps = {
         model?: string
       },
     ): Promise<void>
-    savePreview(id: string, payload: { previewUrl: string; readyAt: Date }): Promise<void>
+    savePreview(id: string, payload: { previewUrl: string | null; readyAt: Date }): Promise<void>
     saveStoryTransaction(
       storyId: string,
       payload: {
@@ -58,12 +58,7 @@ export type StoryProcessorDeps = {
     extractStoryMeta(text: string): Promise<StoryMetaResult>
   }
   cover: {
-    generateCoverBuffer(input: {
-      title: string
-      theme: string
-      mood: string
-      length: string
-    }): Promise<Buffer>
+    processCoverJob(params: { storyId: string }, deps?: unknown): Promise<void>
   }
   s3: {
     uploadBuffer(params: { key: string; body: Buffer; contentType: string }): Promise<void>
@@ -150,24 +145,22 @@ export async function processStoryJob(
       model: primaryModel,
     })
 
-    await deps.repo.updateStatus(storyId, "generating_cover")
-    const coverBuffer = await deps.cover.generateCoverBuffer({
-      title: metaResult.meta.title,
-      theme: story.theme,
-      mood: story.mood,
-      length: story.length,
-    })
+    // Generate cover (non-blocking - errors don't fail the story)
+    try {
+      await deps.repo.updateStatus(storyId, "generating_cover")
+      await deps.cover.processCoverJob(
+        { storyId },
+        {
+          s3: { uploadBuffer: deps.s3.uploadBuffer, buildPublicUrl: deps.s3.buildPublicUrl },
+        },
+      )
+    } catch (coverErr) {
+      // Don't fail story generation if cover generation fails
+      console.error(`[story-worker] cover generation failed for ${storyId}:`, coverErr)
+    }
 
-    await deps.repo.updateStatus(storyId, "uploading_cover")
-    const key = `stories/${storyId}/preview.webp`
-    await deps.s3.uploadBuffer({
-      key,
-      body: coverBuffer,
-      contentType: "image/webp",
-    })
-    const previewUrl = deps.s3.buildPublicUrl(key)
-
-    await deps.repo.savePreview(storyId, { previewUrl, readyAt: now() })
+    // Mark story as ready
+    await deps.repo.savePreview(storyId, { previewUrl: null, readyAt: now() })
   } catch (error) {
     const mappedMessage = mapGenerationError(error)
     await deps.repo.updateStatus(storyId, "failed", mappedMessage)

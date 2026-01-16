@@ -1,12 +1,12 @@
 import amqp from "amqplib"
 
 import { db } from "../lib/db"
-import { generateCoverBuffer } from "../services/cover"
 import { generateStoryText, extractStoryMeta } from "../services/openai"
-import { uploadBuffer, buildPublicUrl } from "../services/s3"
 import { createStoryRepo } from "./processors/story-repo"
 import { processStoryJob } from "./processors/story"
 import { QUEUE_NAME } from "./queue"
+import { createCoverRepo, processCoverJob } from "../services/cover/coverService"
+import { uploadBuffer, buildPublicUrl } from "../services/s3"
 
 const repo = createStoryRepo(db)
 
@@ -29,7 +29,17 @@ async function startWorker() {
       await processStoryJob(payload.storyId, {
         repo,
         openai: { generateStoryText, extractStoryMeta },
-        cover: { generateCoverBuffer },
+        cover: {
+          processCoverJob: async (params, deps) => {
+            const coverRepo = createCoverRepo(db)
+            const coverDeps = deps ? { ...(deps as object) } : {}
+            return processCoverJob(params, {
+              repo: coverRepo,
+              s3: { uploadBuffer, buildPublicUrl },
+              ...coverDeps,
+            })
+          },
+        },
         s3: { uploadBuffer, buildPublicUrl },
       })
       channel.ack(msg)

@@ -13,7 +13,9 @@
     "email": "email dev --dir src/emails",
     "reset-db": "bun src/scripts/reset-db.ts",
     "seed": "bun src/scripts/seed-themes.ts",
-    "db:reset": "bun run reset-db && bun run drizzle:push && bun run seed"
+    "db:reset": "bun run reset-db && bun run drizzle:push && bun run seed",
+    "test:cover": "bun src/scripts/test-cover.ts",
+    "generate:missing-covers": "bun src/scripts/generate-missing-covers.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.892.0",
