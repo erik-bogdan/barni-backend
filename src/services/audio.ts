@@ -140,8 +140,11 @@ export async function requestStoryAudio(
     }
   }
 
-  // Calculate audio cost and reserve credits
-  const audioCost = calcAudioCost(story.length as "short" | "medium" | "long")
+  // Calculate audio cost based on character count (1 character = 1 credit)
+  // Count all characters including spaces (ElevenLabs doesn't normalize)
+  const characterCount = story.text.length
+  const audioCost = characterCount // 1 character = 1 credit
+  
   const balance = await getUserCreditBalance(database, params.userId)
   if (balance < audioCost) {
     return { status: 402, data: { error: "Insufficient credits" } }
@@ -151,7 +154,7 @@ export async function requestStoryAudio(
     return { status: 400, data: { error: "Audio queue is not configured" } }
   }
 
-  // Reserve credits in transaction
+  // Reserve credits in transaction and save character count
   await database.transaction(async (tx) => {
     const txBalance = await getUserCreditBalance(tx, params.userId)
     if (txBalance < audioCost) {
@@ -166,6 +169,11 @@ export async function requestStoryAudio(
       reason: "audio_reserve",
       source: "audio_create",
     })
+
+    // Save character count to story
+    await tx.update(stories)
+      .set({ audioCharacterCount: characterCount })
+      .where(eq(stories.id, story.id))
   })
 
   const audioHash = computeAudioHash({
@@ -214,7 +222,8 @@ export async function processStoryAudioJob(
 
   if (!story.text) {
     // Refund credits on failure
-    const audioCost = calcAudioCost(story.length as "short" | "medium" | "long")
+    // Use character count if available, otherwise fallback to old calculation
+    const audioCost = story.audioCharacterCount ?? calcAudioCost(story.length as "short" | "medium" | "long")
     await database.insert(storyCreditTransactions).values({
       userId: params.userId,
       storyId: story.id,
@@ -241,7 +250,17 @@ export async function processStoryAudioJob(
     return
   }
 
-  const audioCost = calcAudioCost(story.length as "short" | "medium" | "long")
+  // Calculate audio cost based on character count (1 character = 1 credit)
+  // Use stored character count if available, otherwise calculate from text
+  const characterCount = story.audioCharacterCount ?? story.text.length
+  const audioCost = characterCount // 1 character = 1 credit
+  
+  // Save character count if not already saved
+  if (!story.audioCharacterCount && story.text) {
+    await database.update(stories)
+      .set({ audioCharacterCount: story.text.length })
+      .where(eq(stories.id, story.id))
+  }
 
   try {
     await repo.updateAudio(story.id, {
@@ -298,11 +317,13 @@ export async function processStoryAudioJob(
     // For simplicity, we'll just ensure the transaction exists
   } catch (error) {
     // Refund credits on failure
+    // Use character count if available, otherwise fallback to old calculation
+    const refundAmount = story.audioCharacterCount ?? calcAudioCost(story.length as "short" | "medium" | "long")
     await database.insert(storyCreditTransactions).values({
       userId: params.userId,
       storyId: story.id,
       type: "refund",
-      amount: audioCost,
+      amount: refundAmount,
       reason: "audio_failed",
       source: "audio_worker",
     })

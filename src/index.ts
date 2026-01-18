@@ -8,6 +8,8 @@ import { OpenAPI } from './plugins/auth/auth'
 import { ensureBackupDir } from './lib/backup-dir'
 import { portal } from "./routes/portal"
 import { storiesApi } from "./routes/stories"
+import { paymentsApi, stripeWebhook } from "./routes/payments"
+import { dash } from "./routes/dash"
 
 ensureBackupDir()
 
@@ -28,11 +30,17 @@ const app = new Elysia()
       }
   }
   ))
+  // Stripe webhook must be mounted FIRST, before any other routes or middleware
+  // that might intercept or parse the request body
+  // This ensures /stripe/webhook is accessible for POST requests
+  .use(stripeWebhook)
   .use(staticPlugin())
   // Mount auth only for dashboard/dash, not for collector
   .mount(auth.handler)
   .use(portal)
   .use(storiesApi)
+  .use(paymentsApi)
+  .use(dash)
   .use(health)
   app.all("/api/auth/*", async ({ request }) => {
     console.log("[AUTH]", request.method, request.url);

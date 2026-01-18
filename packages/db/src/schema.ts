@@ -9,6 +9,7 @@ import {
   bigserial,
   integer,
   uuid,
+  jsonb,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -186,6 +187,7 @@ export const stories = pgTable("stories", {
   audioPreset: text("audio_preset"),
   audioUpdatedAt: timestamp("audio_updated_at", { withTimezone: true }),
   audioHash: text("audio_hash"),
+  audioCharacterCount: integer("audio_character_count"), // Character count for audio generation (1 char = 1 credit)
   model: text("model"), // OpenAI model used for generation
   coverUrl: text("cover_url"),
   coverSquareUrl: text("cover_square_url"),
@@ -240,7 +242,9 @@ export const storyCreditTransactions = pgTable("story_credit_transactions", {
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
   storyId: uuid("story_id").references(() => stories.id, { onDelete: "set null" }),
-  type: text("type").notNull().default("manual"), // reserve | refund | manual
+  // orderId foreign key will be added in migration (orders table defined later)
+  orderId: uuid("order_id"),
+  type: text("type").notNull().default("manual"), // reserve | refund | manual | purchase | bonus | adjustment | spend
   amount: integer("amount").notNull(),
   reason: text("reason"),
   source: text("source"),
@@ -261,5 +265,168 @@ export const storyTransactions = pgTable("story_transactions", {
   completionTokens: integer("completion_tokens"), // Completion tokens (if available)
   requestId: text("request_id"), // OpenAI request ID (if available)
   responseId: text("response_id"), // OpenAI response ID (if available)
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * Stripe payment integration tables
+ */
+
+// Stripe customers mapping
+export const stripeCustomers = pgTable("stripe_customers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" })
+    .unique(),
+  customerId: text("customer_id").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Coupons for discounts
+export const couponType = pgEnum("coupon_type", ["percent", "amount"]);
+
+// Pricing plans for credit bundles
+export const pricingPlans = pgTable("pricing_plans", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  credits: integer("credits").notNull(),
+  currency: text("currency").notNull().default("HUF"),
+  priceCents: integer("price_cents").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  promoEnabled: boolean("promo_enabled").notNull().default(false),
+  promoType: couponType("promo_type"), // "percent" | "amount" | null
+  promoValue: integer("promo_value"), // percent 1..100 OR amount in minor units
+  promoPriceCents: integer("promo_price_cents"), // Deprecated: kept for backward compatibility
+  promoStartsAt: timestamp("promo_starts_at", { withTimezone: true }),
+  promoEndsAt: timestamp("promo_ends_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const coupons = pgTable("coupons", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  code: text("code").notNull().unique(),
+  type: couponType("type").notNull(),
+  value: integer("value").notNull(), // percent 1..100 OR amount in minor units
+  currency: text("currency"), // required for amount type
+  maxRedemptions: integer("max_redemptions"),
+  redeemedCount: integer("redeemed_count").notNull().default(0),
+  perUserLimit: integer("per_user_limit").default(1),
+  minOrderAmountCents: integer("min_order_amount_cents"),
+  startsAt: timestamp("starts_at", { withTimezone: true }),
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Order status enum
+export const orderStatus = pgEnum("order_status", [
+  "created",
+  "pending_payment",
+  "paid",
+  "canceled",
+  "failed",
+  "refunded",
+]);
+
+// Orders
+export const orders = pgTable("orders", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  status: orderStatus("status").notNull().default("created"),
+  currency: text("currency").notNull(),
+  subtotalCents: integer("subtotal_cents").notNull(),
+  discountCents: integer("discount_cents").notNull().default(0),
+  totalCents: integer("total_cents").notNull(),
+  couponId: uuid("coupon_id").references(() => coupons.id, { onDelete: "set null" }),
+  couponCodeSnapshot: text("coupon_code_snapshot"),
+  couponTypeSnapshot: text("coupon_type_snapshot"),
+  couponValueSnapshot: integer("coupon_value_snapshot"),
+  creditsTotal: integer("credits_total").notNull(),
+  provider: text("provider").notNull().default("stripe"),
+  stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  stripeCustomerId: text("stripe_customer_id"),
+  billingoInvoiceId: integer("billingo_invoice_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Order items
+export const orderItems = pgTable("order_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  pricingPlanId: uuid("pricing_plan_id")
+    .notNull()
+    .references(() => pricingPlans.id, { onDelete: "restrict" }),
+  planCodeSnapshot: text("plan_code_snapshot").notNull(),
+  planNameSnapshot: text("plan_name_snapshot").notNull(),
+  unitPriceCentsSnapshot: integer("unit_price_cents_snapshot").notNull(),
+  quantity: integer("quantity").notNull(),
+  creditsPerUnitSnapshot: integer("credits_per_unit_snapshot").notNull(),
+  lineSubtotalCents: integer("line_subtotal_cents").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Payment attempts
+export const paymentStatus = pgEnum("payment_status", [
+  "created",
+  "requires_action",
+  "succeeded",
+  "failed",
+  "refunded",
+]);
+
+export const payments = pgTable("payments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().default("stripe"),
+  status: paymentStatus("status").notNull().default("created"),
+  amountCents: integer("amount_cents").notNull(),
+  currency: text("currency").notNull(),
+  stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+  stripeChargeId: text("stripe_charge_id"),
+  failureCode: text("failure_code"),
+  failureMessage: text("failure_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Stripe events (raw webhook logs)
+export const stripeEvents = pgTable("stripe_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  stripeEventId: text("stripe_event_id").notNull().unique(),
+  type: text("type").notNull(),
+  apiVersion: text("api_version"),
+  created: timestamp("created", { withTimezone: true }).notNull(),
+  livemode: boolean("livemode").notNull(),
+  payloadJson: jsonb("payload_json").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  processingError: text("processing_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

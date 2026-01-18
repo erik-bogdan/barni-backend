@@ -60,4 +60,3 @@ export async function getPresignedUrl(key: string, expiresIn: number = 3600): Pr
   })
   return await getSignedUrl(client, command, { expiresIn })
 }
-

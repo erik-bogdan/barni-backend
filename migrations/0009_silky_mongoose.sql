@@ -1,0 +1,1 @@
+ALTER TABLE "orders" ADD COLUMN "billingo_invoice_id" integer;
