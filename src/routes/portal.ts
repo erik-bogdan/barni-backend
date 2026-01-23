@@ -3,14 +3,20 @@ import { and, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../lib/db"
 import { auth } from "../lib/auth"
+import { getPresignedUrl } from "../services/s3"
+import { buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from "../services/cover/coverService"
+import { buildFreeStoryAudioKey } from "../services/audio"
 import {
   billingAddresses,
   childThemes,
   children,
   storyCreditTransactions,
+  audioStarTransactions,
   themeCategories,
   themes,
   user,
+  freeStories,
+  freeStoryFeedback,
 } from "../../packages/db/src/schema"
 
 async function requireSession(headers: Headers, set: { status: number }) {
@@ -145,14 +151,24 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
     const session = await requireSession(request.headers, set)
     if (!session) return { error: "Unauthorized" }
 
-    const [row] = await db
+    const [creditRow] = await db
       .select({
         balance: sql<number>`coalesce(sum(${storyCreditTransactions.amount}), 0)`,
       })
       .from(storyCreditTransactions)
       .where(eq(storyCreditTransactions.userId, session.user.id))
 
-    return { balance: row?.balance ?? 0 }
+    const [audioStarRow] = await db
+      .select({
+        balance: sql<number>`coalesce(sum(${audioStarTransactions.amount}), 0)`,
+      })
+      .from(audioStarTransactions)
+      .where(eq(audioStarTransactions.userId, session.user.id))
+
+    return { 
+      balance: creditRow?.balance ?? 0,
+      audioStarBalance: audioStarRow?.balance ?? 0,
+    }
   })
   .get("/children/:childId", async ({ request, params, set }) => {
     const session = await requireSession(request.headers, set)
@@ -410,6 +426,255 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         postalCode: t.String({ minLength: 1 }),
         country: t.String({ minLength: 1 }),
         taxNumber: t.Optional(t.String()),
+      }),
+    },
+  )
+  // Free Stories - public endpoint (no auth required)
+  .get("/free-stories", async () => {
+    const activeFreeStories = await db
+      .select()
+      .from(freeStories)
+      .where(eq(freeStories.status, "active"))
+      .orderBy(sql`${freeStories.publishedAt} DESC NULLS LAST, ${freeStories.createdAt} DESC`)
+
+    // Generate presigned URLs for covers
+    const items = await Promise.all(
+      activeFreeStories.map(async (story) => {
+        let coverUrl = story.coverUrl
+        let coverSquareUrl = story.coverSquareUrl
+
+        // Generate presigned URL for main cover if it exists
+        if (coverUrl) {
+          try {
+            const coverKey = buildFreeStoryCoverKey(story.id)
+            coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+          } catch (error) {
+            console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+            // Fallback to original URL
+          }
+        }
+
+        // Generate presigned URL for square cover if it exists
+        if (coverSquareUrl) {
+          try {
+            const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
+            coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+          } catch (error) {
+            console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+            // Fallback to original URL
+          }
+        }
+
+        return {
+          ...story,
+          coverUrl,
+          coverSquareUrl,
+        }
+      }),
+    )
+
+    return { items }
+  })
+  .get("/free-stories/:id", async ({ params, set }) => {
+    const [story] = await db
+      .select()
+      .from(freeStories)
+      .where(and(
+        eq(freeStories.id, params.id),
+        eq(freeStories.status, "active")
+      ))
+      .limit(1)
+
+    if (!story) {
+      set.status = 404
+      return { error: "Story not found" }
+    }
+
+    // Generate presigned URLs for covers
+    let coverUrl = story.coverUrl
+    let coverSquareUrl = story.coverSquareUrl
+
+    // Generate presigned URL for main cover if it exists
+    if (coverUrl) {
+      try {
+        const coverKey = buildFreeStoryCoverKey(story.id)
+        coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    // Generate presigned URL for square cover if it exists
+    if (coverSquareUrl) {
+      try {
+        const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
+        coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    // Generate presigned URL for audio if it exists
+    let audioUrl = story.audioUrl
+    if (audioUrl) {
+      try {
+        const audioKey = buildFreeStoryAudioKey(story.id)
+        audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for audio ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    return {
+      ...story,
+      coverUrl,
+      coverSquareUrl,
+      audioUrl,
+    }
+  })
+  .get("/free-stories/:id/feedback", async ({ params, request, set }) => {
+    const session = await requireSession(request.headers, set)
+    if (!session) return { error: "Unauthorized" }
+
+    const userId = session.user.id
+    const freeStoryId = params.id
+
+    // Get all feedbacks for this free story
+    const allFeedbacks = await db
+      .select({
+        id: freeStoryFeedback.id,
+        userId: freeStoryFeedback.userId,
+        childId: freeStoryFeedback.childId,
+        type: freeStoryFeedback.type,
+        comment: freeStoryFeedback.comment,
+        createdAt: freeStoryFeedback.createdAt,
+      })
+      .from(freeStoryFeedback)
+      .where(eq(freeStoryFeedback.freeStoryId, freeStoryId))
+      .orderBy(freeStoryFeedback.createdAt)
+
+    // Get user's own feedback
+    const [userFeedback] = await db
+      .select({
+        id: freeStoryFeedback.id,
+        type: freeStoryFeedback.type,
+        comment: freeStoryFeedback.comment,
+        createdAt: freeStoryFeedback.createdAt,
+      })
+      .from(freeStoryFeedback)
+      .where(and(eq(freeStoryFeedback.freeStoryId, freeStoryId), eq(freeStoryFeedback.userId, userId)))
+      .limit(1)
+
+    // Count feedbacks by type
+    const counts = {
+      like: allFeedbacks.filter((f) => f.type === "like").length,
+      sleep: allFeedbacks.filter((f) => f.type === "sleep").length,
+      more: allFeedbacks.filter((f) => f.type === "more").length,
+      dislike: allFeedbacks.filter((f) => f.type === "dislike").length,
+    }
+
+    return {
+      allFeedbacks: allFeedbacks.map((f) => ({
+        id: f.id,
+        userId: f.userId,
+        childId: f.childId,
+        type: f.type,
+        comment: f.comment,
+        createdAt: f.createdAt,
+        isOwn: f.userId === userId,
+      })),
+      userFeedback: userFeedback || null,
+      counts,
+      total: allFeedbacks.length,
+    }
+  })
+  .post(
+    "/free-stories/:id/feedback",
+    async ({ params, body, request, set }) => {
+      const session = await requireSession(request.headers, set)
+      if (!session) return { error: "Unauthorized" }
+
+      const freeStoryId = params.id
+      const userId = session.user.id
+      const { type, comment, childId } = body
+
+      // Validate feedback type
+      if (!["like", "sleep", "more", "dislike"].includes(type)) {
+        set.status = 400
+        return { error: "Invalid feedback type" }
+      }
+
+      // Validate comment is provided for dislike
+      if (type === "dislike" && (!comment || comment.trim().length === 0)) {
+        set.status = 400
+        return { error: "Comment is required for dislike feedback" }
+      }
+
+      // Check if free story exists
+      const [story] = await db
+        .select({ id: freeStories.id })
+        .from(freeStories)
+        .where(and(eq(freeStories.id, freeStoryId), eq(freeStories.status, "active")))
+        .limit(1)
+
+      if (!story) {
+        set.status = 404
+        return { error: "Free story not found" }
+      }
+
+      // Check if feedback already exists
+      const [existing] = await db
+        .select({ id: freeStoryFeedback.id, type: freeStoryFeedback.type })
+        .from(freeStoryFeedback)
+        .where(and(eq(freeStoryFeedback.freeStoryId, freeStoryId), eq(freeStoryFeedback.userId, userId)))
+        .limit(1)
+
+      if (existing) {
+        // Update existing feedback
+        const [updated] = await db
+          .update(freeStoryFeedback)
+          .set({
+            type: type as "like" | "sleep" | "more" | "dislike",
+            comment: type === "dislike" ? (comment?.trim() || null) : null,
+          })
+          .where(eq(freeStoryFeedback.id, existing.id))
+          .returning({ id: freeStoryFeedback.id, type: freeStoryFeedback.type, comment: freeStoryFeedback.comment })
+
+        return {
+          ok: true,
+          alreadySubmitted: true,
+          type: updated.type,
+          comment: updated.comment,
+        }
+      }
+
+      // Insert new feedback
+      const [feedback] = await db
+        .insert(freeStoryFeedback)
+        .values({
+          freeStoryId,
+          userId,
+          childId: childId || null,
+          type: type as "like" | "sleep" | "more" | "dislike",
+          comment: type === "dislike" ? (comment?.trim() || null) : null,
+        })
+        .returning({ id: freeStoryFeedback.id, type: freeStoryFeedback.type, comment: freeStoryFeedback.comment })
+
+      return {
+        ok: true,
+        alreadySubmitted: false,
+        type: feedback.type,
+        comment: feedback.comment,
+      }
+    },
+    {
+      body: t.Object({
+        type: t.String(),
+        comment: t.Optional(t.String()),
+        childId: t.Optional(t.String()),
       }),
     },
   )

@@ -7,7 +7,6 @@ import { EmailService } from "../plugins/email/email.service";
 import { VerificationEmail } from "../plugins/email/templates/verification-email";
 import { ResetPasswordEmail } from "../plugins/email/templates/reset-password-email";
 import { expo } from "@better-auth/expo";
-import { getAppleClientSecret } from "./appleClientSecret";
 
 export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_URL || 'https://solvo.ngrok.app/api/auth',
@@ -23,71 +22,6 @@ export const auth = betterAuth({
           secure: true,
         },
       },
-      account: {
-        accountLinking: {
-            enabled: true, 
-            trustedProviders: ["google", "facebook"]
-        }
-    },
-    socialProviders: {
-        google: {
-            enabled: true,
-            clientId: process.env.GOOGLE_CLIENT_ID || '',
-            clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-            scope: ["profile", "email"],
-            accessType: "offline", 
-            prompt: "select_account consent", 
-            mapProfileToUser: (profile) => ({
-                firstName: (profile as any)?.given_name || "",
-                lastName: (profile as any)?.family_name || "",
-            }),
-        },
-        facebook: {
-            enabled: true,
-            clientId: process.env.FACEBOOK_CLIENT_ID || '',
-            clientSecret: process.env.FACEBOOK_CLIENT_SECRET || '',
-            mapProfileToUser: (profile) => ({
-                firstName: (profile as any)?.first_name || "",
-                lastName: (profile as any)?.last_name || "",
-            }),
-        },
-        apple: {
-            enabled: true,
-            clientId: process.env.APPLE_CLIENT_ID || '',
-            clientSecret: process.env.APPLE_CLIENT_SECRET || '',
-            appBundleIdentifier: process.env.APPLE_BUNDLE_IDENTIFIER || '',
-            mapProfileToUser: (profile) => {
-                const email = ((profile as any)?.email || "").toString();
-                const given = (profile as any)?.given_name || "";
-                const family = (profile as any)?.family_name || "";
-                const rawName = ((profile as any)?.name || "").toString().trim();
-                const nameMatchesEmail =
-                    rawName.length > 0 &&
-                    email.length > 0 &&
-                    rawName.toLowerCase() === email.toLowerCase();
-
-                if (nameMatchesEmail || (!rawName && !given && !family)) {
-                    return {
-                        firstName: "",
-                        lastName: "",
-                    };
-                }
-
-                const nickname =
-                    (profile as any)?.nickname ||
-                    given ||
-                    family ||
-                    "Felhasználó";
-
-                return {
-                    firstName: given || "",
-                    lastName: family || "",
-                    nickname,
-                    name: rawName || `${[given, family].filter(Boolean).join(" ")}` || "",
-                };
-            },
-        },
-    },
     database: drizzleAdapter(db, {
         schema,
         provider: "pg",
@@ -206,6 +140,10 @@ export const auth = betterAuth({
                     if (user.email === user.name) {
                         user.name = "";
                     }
+                },
+                after: async (user, additionalFields: any) => {
+                    // Invitation token processing is now handled separately via API endpoint
+                    // after successful registration
                 },
             },
             update: {

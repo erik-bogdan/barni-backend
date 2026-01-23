@@ -48,6 +48,7 @@ export const user = pgTable("user", {
   banExpires: timestamp("ban_expires"),
   lang: text("lang").default("en"),
   isPro: boolean("is_pro").default(false).notNull(),
+  invitedBy: uuid("invited_by"), // FK to invitations.id - will be set in migration
 });
 
 export const session = pgTable("session", {
@@ -157,6 +158,11 @@ export const storyStatus = pgEnum("story_status", [
   "failed",
 ])
 
+export const freeStoryStatus = pgEnum("free_story_status", [
+  "active",
+  "draft",
+])
+
 export const stories = pgTable("stories", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: text("user_id")
@@ -168,7 +174,7 @@ export const stories = pgTable("stories", {
   status: storyStatus("status").notNull().default("queued"),
   title: text("title"),
   summary: text("summary"),
-  text: text("text"),
+  text: text("text"), // Deprecated: use storyData for new stories
   setting: text("setting"),
   conflict: text("conflict"),
   tone: text("tone"),
@@ -178,6 +184,8 @@ export const stories = pgTable("stories", {
   lesson: text("lesson"),
   previewUrl: text("preview_url"),
   withAudio: boolean("with_audio").default(false),
+  isInteractive: boolean("is_interactive").default(false).notNull(),
+  storyData: jsonb("story_data"), // JSONB field for StoryLinear | StoryTree
   creditCost: integer("credit_cost").notNull(),
   errorMessage: text("error_message"),
   audioUrl: text("audio_url"),
@@ -199,7 +207,7 @@ export const stories = pgTable("stories", {
   readyAt: timestamp("ready_at", { withTimezone: true }),
 })
 
-export const storyFeedbackType = pgEnum("story_feedback_type", ["like", "sleep", "more"])
+export const storyFeedbackType = pgEnum("story_feedback_type", ["like", "sleep", "more", "dislike"])
 
 export const storyFeedback = pgTable("story_feedback", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -212,10 +220,77 @@ export const storyFeedback = pgTable("story_feedback", {
   childId: uuid("child_id")
     .references(() => children.id, { onDelete: "set null" }),
   type: storyFeedbackType("type").notNull(),
+  comment: text("comment"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   uniqueStoryUser: sql`UNIQUE(${table.storyId}, ${table.userId})`,
 }))
+
+export const freeStoryFeedback = pgTable("free_story_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  freeStoryId: uuid("free_story_id")
+    .notNull()
+    .references(() => freeStories.id, { onDelete: "cascade" }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  childId: uuid("child_id")
+    .references(() => children.id, { onDelete: "set null" }),
+  type: storyFeedbackType("type").notNull(),
+  comment: text("comment"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  uniqueFreeStoryUser: sql`UNIQUE(${table.freeStoryId}, ${table.userId})`,
+}))
+
+export const storyPricing = pgTable("story_pricing", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  key: text("key").notNull().unique(), // e.g., "story_short", "story_medium", "story_long", "story_interactive_short", "audio_short", etc.
+  length: text("length").notNull(), // "short" | "medium" | "long"
+  isInteractive: boolean("is_interactive").notNull().default(false),
+  isAudio: boolean("is_audio").notNull().default(false),
+  credits: integer("credits").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+}, (table) => ({
+  uniqueKey: sql`UNIQUE(${table.key})`,
+}))
+
+export const freeStories = pgTable("free_stories", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  status: freeStoryStatus("status").notNull().default("draft"),
+  title: text("title"),
+  summary: text("summary"),
+  text: text("text").notNull(), // The story text (manually entered)
+  theme: text("theme").notNull(),
+  mood: text("mood").notNull(),
+  length: text("length").notNull(),
+  lesson: text("lesson"),
+  setting: text("setting"),
+  conflict: text("conflict"),
+  tone: text("tone"),
+  audioUrl: text("audio_url"),
+  audioStatus: text("audio_status").notNull().default("none"), // none | generating | ready | failed
+  audioError: text("audio_error"),
+  audioVoiceId: text("audio_voice_id"),
+  audioPreset: text("audio_preset"),
+  audioUpdatedAt: timestamp("audio_updated_at", { withTimezone: true }),
+  audioHash: text("audio_hash"),
+  audioCharacterCount: integer("audio_character_count"),
+  coverUrl: text("cover_url"),
+  coverSquareUrl: text("cover_square_url"),
+  coverStatus: text("cover_status").notNull().default("none"), // none | generating | ready | failed
+  coverError: text("cover_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+})
 
 export const billingAddresses = pgTable("billing_addresses", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -251,6 +326,20 @@ export const storyCreditTransactions = pgTable("story_credit_transactions", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const audioStarTransactions = pgTable("audio_star_transactions", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  storyId: uuid("story_id").references(() => stories.id, { onDelete: "set null" }),
+  orderId: uuid("order_id"),
+  type: text("type").notNull().default("manual"), // reserve | refund | manual | purchase | bonus | adjustment | spend
+  amount: integer("amount").notNull(), // 1 hang = 1 csillag, mindig -1 vagy +N
+  reason: text("reason"),
+  source: text("source"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const storyTransactions = pgTable("story_transactions", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   storyId: uuid("story_id")
@@ -269,7 +358,7 @@ export const storyTransactions = pgTable("story_transactions", {
 });
 
 /**
- * Stripe payment integration tables
+ * Payment provider integration tables
  */
 
 // Stripe customers mapping
@@ -280,6 +369,21 @@ export const stripeCustomers = pgTable("stripe_customers", {
     .references(() => user.id, { onDelete: "cascade" })
     .unique(),
   customerId: text("customer_id").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Barion customers mapping
+export const barionCustomers = pgTable("barion_customers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" })
+    .unique(),
+  customerId: text("customer_id").notNull(), // Email or reference ID
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .defaultNow()
@@ -298,6 +402,7 @@ export const pricingPlans = pgTable("pricing_plans", {
   credits: integer("credits").notNull(),
   currency: text("currency").notNull().default("HUF"),
   priceCents: integer("price_cents").notNull(),
+  description: text("description"), // Leírás adminból szerkeszthető
   isActive: boolean("is_active").notNull().default(true),
   promoEnabled: boolean("promo_enabled").notNull().default(false),
   promoType: couponType("promo_type"), // "percent" | "amount" | null
@@ -305,6 +410,8 @@ export const pricingPlans = pgTable("pricing_plans", {
   promoPriceCents: integer("promo_price_cents"), // Deprecated: kept for backward compatibility
   promoStartsAt: timestamp("promo_starts_at", { withTimezone: true }),
   promoEndsAt: timestamp("promo_ends_at", { withTimezone: true }),
+  bonusAudioStars: integer("bonus_audio_stars").notNull().default(0), // Ajándék hangcsillagok
+  bonusCredits: integer("bonus_credits").notNull().default(0), // Ajándék mesetallérok
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .defaultNow()
@@ -359,9 +466,15 @@ export const orders = pgTable("orders", {
   couponValueSnapshot: integer("coupon_value_snapshot"),
   creditsTotal: integer("credits_total").notNull(),
   provider: text("provider").notNull().default("stripe"),
+  // Stripe fields
   stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
   stripeCustomerId: text("stripe_customer_id"),
+  // Barion fields
+  barionPaymentId: text("barion_payment_id").unique(),
+  barionPaymentRequestId: text("barion_payment_request_id"),
+  barionCustomerId: text("barion_customer_id"),
+  // General
   billingoInvoiceId: integer("billingo_invoice_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
@@ -406,8 +519,13 @@ export const payments = pgTable("payments", {
   status: paymentStatus("status").notNull().default("created"),
   amountCents: integer("amount_cents").notNull(),
   currency: text("currency").notNull(),
+  // Stripe fields
   stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
   stripeChargeId: text("stripe_charge_id"),
+  // Barion fields
+  barionPaymentId: text("barion_payment_id"),
+  barionTransactionId: text("barion_transaction_id"),
+  // General
   failureCode: text("failure_code"),
   failureMessage: text("failure_message"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -429,4 +547,162 @@ export const stripeEvents = pgTable("stripe_events", {
   processedAt: timestamp("processed_at", { withTimezone: true }),
   processingError: text("processing_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Barion events (raw webhook logs)
+export const barionEvents = pgTable("barion_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  barionEventId: text("barion_event_id").notNull().unique(),
+  paymentId: text("payment_id"),
+  type: text("type").notNull(),
+  created: timestamp("created", { withTimezone: true }).notNull(),
+  livemode: boolean("livemode").notNull(),
+  payloadJson: jsonb("payload_json").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  processingError: text("processing_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Feedback status enum
+export const feedbackStatus = pgEnum("feedback_status", [
+  "submitted",
+  "under_review",
+  "awaiting_response",
+  "responded",
+  "closed",
+]);
+
+// Feedback submissions
+export const feedbacks = pgTable("feedbacks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  status: feedbackStatus("status").notNull().default("submitted"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  lastViewedAt: timestamp("last_viewed_at", { withTimezone: true }),
+});
+
+// Feedback replies (both from users and admins)
+export const feedbackReplies = pgTable("feedback_replies", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  feedbackId: uuid("feedback_id")
+    .notNull()
+    .references(() => feedbacks.id, { onDelete: "cascade" }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  isAdmin: boolean("is_admin").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/**
+ * Invitation system tables
+ */
+
+// Invitation request status enum
+export const invitationRequestStatus = pgEnum("invitation_request_status", [
+  "pending",
+  "approved",
+  "rejected",
+]);
+
+// Invitation requests - users can request invitations
+export const invitationRequests = pgTable("invitation_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  status: invitationRequestStatus("status").notNull().default("pending"),
+  reason: text("reason"), // Optional reason for the request
+  reviewedBy: text("reviewed_by").references(() => user.id, { onDelete: "set null" }), // Admin who reviewed
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Invitation status enum
+export const invitationStatus = pgEnum("invitation_status", [
+  "pending",
+  "accepted",
+  "expired",
+]);
+
+// Invitations - sent invitations with tokens
+export const invitations = pgTable("invitations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  inviterId: text("inviter_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }), // User who sent the invitation
+  inviteeEmail: text("invitee_email").notNull(),
+  token: text("token").notNull().unique(), // Unique token for registration
+  status: invitationStatus("status").notNull().default("pending"),
+  acceptedBy: text("accepted_by").references(() => user.id, { onDelete: "set null" }), // User who accepted (registered)
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+})
+
+// Add invitedBy to user table after invitations is defined
+// We'll add this via migration instead to avoid circular reference
+
+// Invitation credit transactions - tracks invitation credits (plus/minus)
+export const invitationCreditTransactions = pgTable("invitation_credit_transactions", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  invitationId: uuid("invitation_id").references(() => invitations.id, { onDelete: "set null" }),
+  invitationRequestId: uuid("invitation_request_id").references(() => invitationRequests.id, { onDelete: "set null" }),
+  type: text("type").notNull(), // "request_approved" | "invitation_sent" | "invitation_accepted" | "manual"
+  amount: integer("amount").notNull(), // Positive for credits earned, negative for credits spent
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Invitation settings - admin configurable settings
+export const invitationSettings = pgTable("invitation_settings", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  key: text("key").notNull().unique(), // e.g., "credits_on_request_approval", "credits_on_invitee_registration"
+  value: integer("value").notNull(), // Credit amount
+  description: text("description"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+// Pre-registration requests - people who want to register but need approval
+export const preRegistrations = pgTable("pre_registrations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  email: text("email").notNull().unique(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  reason: text("reason"), // Why they want to register
+  status: text("status").notNull().default("pending"), // "pending" | "approved" | "rejected"
+  approvedBy: text("approved_by").references(() => user.id, { onDelete: "set null" }), // Admin who approved
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  invitationId: uuid("invitation_id").references(() => invitations.id, { onDelete: "set null" }), // Generated invitation if approved
+  emailSentAt: timestamp("email_sent_at", { withTimezone: true }), // When the invitation email was last sent
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
 });

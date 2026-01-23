@@ -22,13 +22,8 @@ import {
   fulfillOrder,
   createPayment,
 } from "../services/orders";
-import {
-  createCheckoutSession,
-  verifyWebhookSignature,
-  ensureCustomer,
-} from "../lib/stripe";
-import { stripeEvents, orders, orderItems, user, billingAddresses } from "../../packages/db/src/schema";
-import Stripe from "stripe";
+import { getPaymentProvider, getCurrentProviderType, getPaymentProviderByType } from "../lib/payment-providers/factory";
+import { stripeEvents, barionEvents, orders, orderItems, user, billingAddresses } from "../../packages/db/src/schema";
 import { createInvoiceForOrder } from "../services/billingo";
 
 async function requireSession(headers: Headers, set: { status: number }) {
@@ -52,6 +47,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         credits: plan.credits,
         currency: plan.currency,
         priceCents: plan.priceCents,
+        description: plan.description,
         promoEnabled: plan.promoEnabled,
         promoType: plan.promoType,
         promoValue: plan.promoValue,
@@ -59,6 +55,8 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         promoStartsAt: plan.promoStartsAt,
         promoEndsAt: plan.promoEndsAt,
         effectivePriceCents: plan.effectivePriceCents,
+        bonusAudioStars: plan.bonusAudioStars ?? 0,
+        bonusCredits: plan.bonusCredits ?? 0,
       })),
     };
   })
@@ -180,10 +178,12 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         return { error: "Invalid order total: amount must be greater than 0" };
       }
 
-      // Validate minimum for Stripe (HUF minimum is 175 Ft)
-      if (totalCents < 175) {
+      // Get payment provider to validate minimum amount
+      const paymentProviderForValidation = getPaymentProvider();
+      const minimumAmount = paymentProviderForValidation.getMinimumAmount(plan.currency);
+      if (totalCents < minimumAmount) {
         set.status = 400;
-        return { error: `Order total too low: ${totalCents} ${plan.currency}. Minimum is 175 ${plan.currency}.` };
+        return { error: `Order total too low: ${totalCents} ${plan.currency}. Minimum is ${minimumAmount} ${plan.currency}.` };
       }
 
       // Log for debugging (remove in production or use proper logger)
@@ -243,25 +243,29 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         orderCurrency: order.currency,
       });
 
-      // Ensure Stripe customer exists
-      let stripeCustomerId: string | undefined;
+      // Get payment provider
+      const paymentProvider = getPaymentProvider();
+      const providerType = getCurrentProviderType();
+
+      // Ensure customer exists in payment provider
+      let customerId: string | undefined;
       try {
-        stripeCustomerId = await ensureCustomer(userId, userRow.email);
+        customerId = await paymentProvider.ensureCustomer(userId, userRow.email);
       } catch (err) {
-        console.error("Failed to ensure Stripe customer:", err);
+        console.error(`[Checkout] Failed to ensure ${providerType} customer:`, err);
         // Continue without customer ID
       }
 
-      // Create Stripe checkout session
+      // Create checkout session
       // IMPORTANT: Use order.totalCents (backend-calculated, not client-provided)
-      console.log("[Checkout] Creating Stripe session for order:", {
+      console.log(`[Checkout] Creating ${providerType} checkout session for order:`, {
         orderId: order.id,
         orderTotalCents: order.totalCents,
         currency: plan.currency,
         planCode: plan.code,
       });
 
-      const checkoutSession = await createCheckoutSession({
+      const checkoutSession = await paymentProvider.createCheckoutSession({
         orderId: order.id,
         userId,
         planName: plan.name,
@@ -270,29 +274,35 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         currency: plan.currency,
         creditsTotal: order.creditsTotal,
         customerEmail: userRow.email,
-        customerId: stripeCustomerId,
+        customerId: customerId,
       });
 
       // Verify the amount matches
-      console.log("[Checkout] Stripe session created:", {
+      console.log(`[Checkout] ${providerType} session created:`, {
         sessionId: checkoutSession.id,
         orderTotal: order.totalCents,
-        stripeTotal: checkoutSession.amount_total,
+        providerTotal: checkoutSession.amountTotal,
         currency: checkoutSession.currency,
       });
 
-      if (checkoutSession.amount_total !== order.totalCents) {
+      if (Math.abs(checkoutSession.amountTotal - order.totalCents) > 0.01) {
         console.error("[Checkout] Amount mismatch!", {
           orderTotal: order.totalCents,
-          stripeTotal: checkoutSession.amount_total,
+          providerTotal: checkoutSession.amountTotal,
         });
       }
 
-      // Update order with checkout session ID
-      await updateOrderPayment(db, order.id, {
-        stripeCheckoutSessionId: checkoutSession.id,
-        stripeCustomerId: stripeCustomerId,
-      });
+      // Update order with provider-specific fields
+      const updateData: any = {};
+      if (providerType === "stripe") {
+        updateData.stripeCheckoutSessionId = checkoutSession.id;
+        updateData.stripeCustomerId = customerId;
+      } else if (providerType === "barion") {
+        updateData.barionPaymentId = checkoutSession.id;
+        updateData.barionPaymentRequestId = checkoutSession.metadata?.payment_request_id;
+        updateData.barionCustomerId = customerId;
+      }
+      await updateOrderPayment(db, order.id, updateData);
 
       return {
         checkoutUrl: checkoutSession.url,
@@ -495,10 +505,11 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
       return { error: "Missing stripe-signature header" };
     }
 
-    // Verify signature (async in Bun due to SubtleCrypto)
-    let event: Stripe.Event;
+    // Get Stripe provider and verify signature
+    const stripeProvider = getPaymentProviderByType("stripe");
+    let event;
     try {
-      event = await verifyWebhookSignature(rawBody, signature);
+      event = await stripeProvider.verifyWebhookSignature(rawBody, signature);
       console.log("[Stripe Webhook] Signature verified, event type:", event.type);
     } catch (err: any) {
       console.error("Webhook signature verification failed:", err);
@@ -511,8 +522,8 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
       await db.insert(stripeEvents).values({
         stripeEventId: event.id,
         type: event.type,
-        apiVersion: event.api_version ?? null,
-        created: new Date(event.created * 1000), // Stripe timestamp is in seconds
+        apiVersion: (event.data as any).api_version ?? null,
+        created: event.created,
         livemode: event.livemode,
         payloadJson: JSON.parse(rawBody) as any,
       });
@@ -525,7 +536,7 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
 
     // Acknowledge quickly
     // Process events asynchronously (in production, you might want to use a queue)
-    processWebhookEvent(event).catch((err) => {
+    processStripeWebhookEvent(event).catch((err) => {
       console.error("Error processing webhook event:", err);
     });
 
@@ -533,14 +544,14 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
   });
 
 /**
- * Process webhook event
+ * Process Stripe webhook event
  */
-async function processWebhookEvent(event: Stripe.Event): Promise<void> {
+async function processStripeWebhookEvent(event: any): Promise<void> {
   try {
     if (event.type === "checkout.session.completed") {
-      await handleCheckoutSessionCompleted(event);
+      await handleStripeCheckoutSessionCompleted(event);
     } else if (event.type === "charge.refunded") {
-      await handleChargeRefunded(event);
+      await handleStripeChargeRefunded(event);
     }
 
     // Mark as processed
@@ -561,12 +572,12 @@ async function processWebhookEvent(event: Stripe.Event): Promise<void> {
 }
 
 /**
- * Handle checkout.session.completed event
+ * Handle Stripe checkout.session.completed event
  */
-async function handleCheckoutSessionCompleted(
-  event: Stripe.Event,
+async function handleStripeCheckoutSessionCompleted(
+  event: any,
 ): Promise<void> {
-  const session = event.data.object as Stripe.Checkout.Session;
+  const session = event.data.object;
 
   const orderId = session.metadata?.order_id;
   const userId = session.metadata?.user_id;
@@ -625,6 +636,7 @@ async function handleCheckoutSessionCompleted(
     status: "succeeded",
     amountCents: order.totalCents,
     currency: order.currency,
+    provider: "stripe",
     stripePaymentIntentId: session.payment_intent as string | undefined,
     stripeChargeId: undefined, // Will be available in payment_intent.succeeded event
   });
@@ -715,10 +727,10 @@ async function handleCheckoutSessionCompleted(
 }
 
 /**
- * Handle charge.refunded event
+ * Handle Stripe charge.refunded event
  */
-async function handleChargeRefunded(event: Stripe.Event): Promise<void> {
-  const charge = event.data.object as Stripe.Charge;
+async function handleStripeChargeRefunded(event: any): Promise<void> {
+  const charge = event.data.object;
 
   // Find order by payment intent or charge
   // This is simplified - in production you'd want to store charge_id in payments table
@@ -727,4 +739,395 @@ async function handleChargeRefunded(event: Stripe.Event): Promise<void> {
   // - Find order by charge/payment_intent
   // - Mark order as refunded
   // - Add negative credit ledger entry
+}
+
+// Barion webhook endpoint
+// Route: GET/POST /barion/webhook
+// Barion can send callbacks as either GET (with paymentId query param) or POST (with JSON body)
+export const barionWebhook = new Elysia({ name: "barion-webhook" })
+  // Test endpoint to verify route is accessible
+  .get("/barion/webhook/test", () => {
+    return { message: "Barion webhook route is accessible", timestamp: new Date().toISOString() };
+  })
+  // Handle GET requests (Barion callback with paymentId query parameter)
+  .get("/barion/webhook", async ({ request, query, set }) => {
+    console.log("[Barion Webhook] Received GET request");
+    console.log("[Barion Webhook] Request URL:", request.url);
+    console.log("[Barion Webhook] Query params:", query);
+    
+    const paymentId = query.paymentId as string | undefined;
+    
+    if (!paymentId) {
+      set.status = 400;
+      return { error: "Missing paymentId query parameter" };
+    }
+
+    console.log("[Barion Webhook] Processing GET callback for paymentId:", paymentId);
+
+    // Get Barion provider to fetch payment state
+    const barionProvider = getPaymentProviderByType("barion");
+    
+    try {
+      // Fetch payment state from Barion API
+      const paymentState = await barionProvider.getPaymentState(paymentId);
+      
+      console.log("[Barion Webhook] Payment state:", {
+        paymentId,
+        status: paymentState.Status,
+        transactions: paymentState.Transactions?.length || 0,
+      });
+
+      // Create a webhook event-like object from the payment state
+      const event = {
+        id: paymentId,
+        type: paymentState.Status === "Succeeded" ? "payment.completed" : "payment.state_changed",
+        data: paymentState,
+        created: new Date(),
+        livemode: env.BARION_ENVIRONMENT === "production",
+      };
+
+      // Store event in database
+      try {
+        await db.insert(barionEvents).values({
+          barionEventId: paymentId,
+          paymentId: paymentId,
+          type: event.type,
+          created: event.created,
+          livemode: event.livemode,
+          payloadJson: paymentState as any,
+        });
+      } catch (err: any) {
+        // If duplicate, that's okay (idempotency)
+        if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
+          console.error("Failed to store barion event:", err);
+        }
+      }
+
+      // Process event asynchronously
+      processBarionWebhookEvent(event).catch((err) => {
+        console.error("Error processing barion webhook event:", err);
+      });
+
+      return { received: true, paymentId, status: paymentState.Status };
+    } catch (error: any) {
+      console.error("[Barion Webhook] Error processing GET callback:", error);
+      set.status = 500;
+      return { error: error.message || "Failed to process callback" };
+    }
+  })
+  // Handle POST requests (Barion webhook with JSON body and signature)
+  .post("/barion/webhook", async ({ request, set }) => {
+    console.log("[Barion Webhook] Received POST request");
+    console.log("[Barion Webhook] Request URL:", request.url);
+    console.log("[Barion Webhook] Request headers:", Object.fromEntries(request.headers.entries()));
+    
+    // Get raw body for signature verification
+    let rawBody: string;
+    try {
+      rawBody = await request.text();
+      console.log("[Barion Webhook] Raw body length:", rawBody.length);
+      console.log("[Barion Webhook] Raw body:", rawBody.substring(0, 500));
+    } catch (error: any) {
+      console.error("[Barion Webhook] Error reading raw body:", error);
+      set.status = 400;
+      return { error: "Failed to read request body" };
+    }
+
+    const signature = request.headers.get("x-barion-signature");
+
+    // Signature is optional for POST requests (Barion may not always send it)
+    // If signature is present, verify it; otherwise, process without verification
+    if (signature) {
+      // Get Barion provider and verify signature
+      const barionProvider = getPaymentProviderByType("barion");
+      let event;
+      try {
+        event = await barionProvider.verifyWebhookSignature(rawBody, signature);
+        console.log("[Barion Webhook] Signature verified, event type:", event.type);
+      } catch (err: any) {
+        console.error("Webhook signature verification failed:", err);
+        set.status = 400;
+        return { error: err.message };
+      }
+
+      // Store raw event in database
+      try {
+        await db.insert(barionEvents).values({
+          barionEventId: event.id,
+          paymentId: event.data.PaymentId || null,
+          type: event.type,
+          created: event.created,
+          livemode: event.livemode,
+          payloadJson: JSON.parse(rawBody) as any,
+        });
+      } catch (err: any) {
+        // If duplicate, that's okay (idempotency)
+        if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
+          console.error("Failed to store barion event:", err);
+        }
+      }
+
+      // Acknowledge quickly
+      // Process events asynchronously
+      processBarionWebhookEvent(event).catch((err) => {
+        console.error("Error processing barion webhook event:", err);
+      });
+
+      return { received: true };
+    } else {
+      // No signature - try to parse payload (can be JSON or URL-encoded)
+      console.log("[Barion Webhook] No signature header, processing payload");
+      try {
+        let paymentId: string | undefined;
+        let payloadData: any;
+
+        // Try to parse as JSON first
+        try {
+          payloadData = JSON.parse(rawBody);
+          paymentId = payloadData.PaymentId || payloadData.paymentId;
+        } catch {
+          // If not JSON, try URL-encoded format (PaymentId=...)
+          console.log("[Barion Webhook] Not JSON, trying URL-encoded format");
+          const urlParams = new URLSearchParams(rawBody);
+          paymentId = urlParams.get("PaymentId") || urlParams.get("paymentId") || undefined;
+          
+          // If still not found, try direct parsing (PaymentId=value format)
+          if (!paymentId && rawBody.includes("PaymentId=")) {
+            const match = rawBody.match(/PaymentId=([^&\s]+)/);
+            if (match) {
+              paymentId = match[1];
+            }
+          }
+          
+          payloadData = { PaymentId: paymentId };
+        }
+        
+        if (!paymentId) {
+          console.error("[Barion Webhook] Could not extract PaymentId from payload:", rawBody);
+          set.status = 400;
+          return { error: "Missing PaymentId in payload" };
+        }
+
+        console.log("[Barion Webhook] Extracted paymentId:", paymentId);
+
+        // Fetch payment state from Barion API to verify
+        const barionProvider = getPaymentProviderByType("barion");
+        const paymentState = await barionProvider.getPaymentState(paymentId);
+
+        const event = {
+          id: paymentId,
+          type: paymentState.Status === "Succeeded" ? "payment.completed" : "payment.state_changed",
+          data: paymentState,
+          created: new Date(),
+          livemode: env.BARION_ENVIRONMENT === "production",
+        };
+
+        // Store event
+        try {
+          await db.insert(barionEvents).values({
+            barionEventId: paymentId,
+            paymentId: paymentId,
+            type: event.type,
+            created: event.created,
+            livemode: event.livemode,
+            payloadJson: paymentState as any,
+          });
+        } catch (err: any) {
+          if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
+            console.error("Failed to store barion event:", err);
+          }
+        }
+
+        // Process event
+        processBarionWebhookEvent(event).catch((err) => {
+          console.error("Error processing barion webhook event:", err);
+        });
+
+        return { received: true, paymentId };
+      } catch (error: any) {
+        console.error("[Barion Webhook] Error parsing POST payload:", error);
+        set.status = 400;
+        return { error: `Failed to process payload: ${error.message}` };
+      }
+    }
+  });
+
+/**
+ * Process Barion webhook event
+ */
+async function processBarionWebhookEvent(event: any): Promise<void> {
+  try {
+    // Barion sends payment state updates
+    // Check if payment is completed
+    if (event.type === "payment.completed" || event.data.Status === "Succeeded") {
+      await handleBarionPaymentCompleted(event);
+    }
+
+    // Mark as processed
+    await db
+      .update(barionEvents)
+      .set({ processedAt: new Date() })
+      .where(eq(barionEvents.barionEventId, event.id));
+  } catch (err: any) {
+    // Mark processing error
+    await db
+      .update(barionEvents)
+      .set({
+        processingError: err.message,
+      })
+      .where(eq(barionEvents.barionEventId, event.id));
+    throw err;
+  }
+}
+
+/**
+ * Handle Barion payment completed event
+ */
+async function handleBarionPaymentCompleted(event: any): Promise<void> {
+  const paymentData = event.data;
+  const paymentId = paymentData.PaymentId;
+  const paymentRequestId = paymentData.PaymentRequestId || paymentData.OrderNumber;
+
+  if (!paymentRequestId) {
+    throw new Error("Missing PaymentRequestId or OrderNumber in Barion webhook");
+  }
+
+  // PaymentRequestId is the orderId
+  const orderId = paymentRequestId;
+
+  // Get order
+  const result = await getOrderById(db, orderId);
+  if (!result) {
+    throw new Error(`Order ${orderId} not found`);
+  }
+
+  const { order } = result;
+
+  // Idempotency check: if already paid, skip
+  if (order.status === "paid") {
+    console.log(`Order ${orderId} already paid, skipping fulfillment`);
+    return;
+  }
+
+  // Verify amount from transaction
+  const transaction = paymentData.Transactions?.[0];
+  if (transaction) {
+    const barionAmount = transaction.Total || 0;
+    console.log("[Barion Webhook] Amount reconciliation:", {
+      barionAmount,
+      orderTotalCents: order.totalCents,
+      currency: order.currency,
+    });
+
+    if (Math.abs(barionAmount - order.totalCents) > 0.01) {
+      // Amount mismatch - mark as failed
+      await updateOrderPayment(db, orderId, {
+        status: "failed",
+      });
+      throw new Error(
+        `Amount mismatch: Barion ${barionAmount} vs Order ${order.totalCents}`,
+      );
+    }
+  }
+
+  // Update order to paid
+  await updateOrderPayment(db, orderId, {
+    status: "paid",
+    barionPaymentId: paymentId,
+    barionPaymentRequestId: paymentRequestId,
+  });
+
+  // Create payment record
+  await createPayment(db, orderId, {
+    status: "succeeded",
+    amountCents: order.totalCents,
+    currency: order.currency,
+    provider: "barion",
+    barionPaymentId: paymentId,
+    barionTransactionId: transaction?.POSTransactionId,
+  });
+
+  // Fulfill order: add credits
+  await fulfillOrder(db, orderId);
+
+  // Update coupon redeemed count if applicable
+  if (order.couponId) {
+    await db
+      .update(coupons)
+      .set({
+        redeemedCount: sql`${coupons.redeemedCount} + 1`,
+      })
+      .where(eq(coupons.id, order.couponId));
+  }
+
+  // Create Billingo invoice
+  try {
+    // Get user profile and billing address
+    const [userRow] = await db
+      .select()
+      .from(user)
+      .where(eq(user.id, order.userId))
+      .limit(1);
+
+    if (!userRow) {
+      console.error(`[Billingo] User ${order.userId} not found for invoice creation`);
+    } else {
+      const [billing] = await db
+        .select()
+        .from(billingAddresses)
+        .where(eq(billingAddresses.userId, order.userId))
+        .limit(1);
+
+      const userProfile = {
+        email: userRow.email,
+        firstName: userRow.firstName,
+        lastName: userRow.lastName,
+        billingAddress: billing
+          ? {
+              name: billing.name,
+              street: billing.street,
+              city: billing.city,
+              postalCode: billing.postalCode,
+              country: billing.country,
+              taxNumber: billing.taxNumber,
+            }
+          : null,
+      };
+
+      // Get order items
+      const orderItemsList = await db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderId));
+
+      // Create invoice
+      const billingoInvoiceId = await createInvoiceForOrder(
+        {
+          id: order.id,
+          totalCents: order.totalCents,
+          subtotalCents: order.subtotalCents,
+          discountCents: order.discountCents,
+          currency: order.currency,
+          createdAt: order.createdAt,
+        },
+        orderItemsList.map((item) => ({
+          planNameSnapshot: item.planNameSnapshot,
+          quantity: item.quantity,
+          lineSubtotalCents: item.lineSubtotalCents,
+          creditsPerUnitSnapshot: item.creditsPerUnitSnapshot,
+        })),
+        userProfile,
+      );
+
+      // Save invoice ID to order
+      await updateOrderPayment(db, orderId, {
+        billingoInvoiceId,
+      });
+
+      console.log(`[Billingo] Invoice created for order ${orderId}: ${billingoInvoiceId}`);
+    }
+  } catch (error: any) {
+    // Log error but don't fail the webhook - invoice creation is not critical
+    console.error(`[Billingo] Failed to create invoice for order ${orderId}:`, error.message);
+  }
 }

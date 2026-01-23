@@ -6,10 +6,10 @@ import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js"
 import { eq, and } from "drizzle-orm"
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js"
 
-import { stories, storyCreditTransactions } from "../../packages/db/src/schema"
+import { stories, storyCreditTransactions, audioStarTransactions, freeStories } from "../../packages/db/src/schema"
 import { db } from "../lib/db"
 import { buildPublicUrl, uploadBuffer } from "./s3"
-import { calcAudioCost, getUserCreditBalance } from "./credits"
+import { calcAudioCost, getUserCreditBalance, getUserAudioStarBalance } from "./credits"
 
 export const AUDIO_VOICE_ID = "scmhl57lfsXIkyLMdk8s"
 export const AUDIO_MODEL_ID = "eleven_v3"
@@ -26,6 +26,7 @@ export type AudioStoryRow = {
   audioUrl: string | null
   audioStatus: string
   audioHash: string | null
+  isInteractive: boolean
 }
 
 export type AudioUpdate = {
@@ -46,6 +47,10 @@ export type AudioRepo = {
 
 export function buildAudioKey(storyId: string): string {
   return `stories/${storyId}/audio.mp3`
+}
+
+export function buildFreeStoryAudioKey(storyId: string): string {
+  return `free-stories/${storyId}/audio.mp3`
 }
 
 export function computeAudioHash(params: {
@@ -73,6 +78,7 @@ export function createAudioRepo(
           audioUrl: stories.audioUrl,
           audioStatus: stories.audioStatus,
           audioHash: stories.audioHash,
+          isInteractive: stories.isInteractive,
         })
         .from(stories)
         .where(and(eq(stories.id, storyId), eq(stories.userId, userId)))
@@ -89,6 +95,7 @@ export function createAudioRepo(
           audioUrl: stories.audioUrl,
           audioStatus: stories.audioStatus,
           audioHash: stories.audioHash,
+          isInteractive: stories.isInteractive,
         })
         .from(stories)
         .where(eq(stories.id, storyId))
@@ -113,7 +120,7 @@ type RequestAudioResult =
   | { status: 400 | 402 | 404; data: { error: string } }
 
 export async function requestStoryAudio(
-  params: { storyId: string; userId: string; force?: boolean },
+  params: { storyId: string; userId: string; force?: boolean; paymentMethod?: "audioStar" | "credits" },
   deps?: {
     repo?: AudioRepo
     enqueue?: (payload: { storyId: string; userId: string; force: boolean }) => Promise<string>
@@ -129,6 +136,10 @@ export async function requestStoryAudio(
   const story = await repo.getStoryForUser(params.storyId, params.userId)
   if (!story) return { status: 404, data: { error: "Story not found" } }
 
+  if (story.isInteractive) {
+    return { status: 400, data: { error: "Audio generation is not available for interactive stories" } }
+  }
+
   if (!story.text) return { status: 400, data: { error: "Story text missing" } }
 
   const force = Boolean(params.force)
@@ -140,40 +151,71 @@ export async function requestStoryAudio(
     }
   }
 
-  // Calculate audio cost based on character count (1 character = 1 credit)
-  // Count all characters including spaces (ElevenLabs doesn't normalize)
-  const characterCount = story.text.length
-  const audioCost = characterCount // 1 character = 1 credit
+  // Determine payment method: use explicit choice or auto-detect
+  const audioStarBalance = await getUserAudioStarBalance(database, params.userId)
+  let useAudioStar = false
   
-  const balance = await getUserCreditBalance(database, params.userId)
-  if (balance < audioCost) {
-    return { status: 402, data: { error: "Insufficient credits" } }
+  if (params.paymentMethod === "audioStar") {
+    // User explicitly chose audio star
+    if (audioStarBalance < 1) {
+      return { status: 402, data: { error: "Insufficient audio stars" } }
+    }
+    useAudioStar = true
+  } else if (params.paymentMethod === "credits") {
+    // User explicitly chose credits
+    useAudioStar = false
+  } else {
+    // Auto-detect: use audio star if available, otherwise credits
+    useAudioStar = audioStarBalance >= 1
+  }
+  
+  // If using credits, check credit balance (old pricing based on length)
+  let audioCost = 0
+  if (!useAudioStar) {
+    audioCost = await calcAudioCost(story.length as "short" | "medium" | "long", database)
+    const creditBalance = await getUserCreditBalance(database, params.userId)
+    if (creditBalance < audioCost) {
+      return { status: 402, data: { error: "Insufficient credits" } }
+    }
   }
 
   if (!enqueue) {
     return { status: 400, data: { error: "Audio queue is not configured" } }
   }
 
-  // Reserve credits in transaction and save character count
+  // Reserve payment in transaction
   await database.transaction(async (tx) => {
-    const txBalance = await getUserCreditBalance(tx, params.userId)
-    if (txBalance < audioCost) {
-      throw new Error("Insufficient credits")
+    if (useAudioStar) {
+      // Use 1 audio star
+      const txAudioStarBalance = await getUserAudioStarBalance(tx, params.userId)
+      if (txAudioStarBalance < 1) {
+        throw new Error("Insufficient audio stars")
+      }
+
+      await tx.insert(audioStarTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "reserve",
+        amount: -1, // 1 hang = 1 csillag
+        reason: "audio_reserve",
+        source: "audio_create",
+      })
+    } else {
+      // Use credits (old pricing)
+      const txBalance = await getUserCreditBalance(tx, params.userId)
+      if (txBalance < audioCost) {
+        throw new Error("Insufficient credits")
+      }
+
+      await tx.insert(storyCreditTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "reserve",
+        amount: -audioCost,
+        reason: "audio_reserve",
+        source: "audio_create",
+      })
     }
-
-    await tx.insert(storyCreditTransactions).values({
-      userId: params.userId,
-      storyId: story.id,
-      type: "reserve",
-      amount: -audioCost,
-      reason: "audio_reserve",
-      source: "audio_create",
-    })
-
-    // Save character count to story
-    await tx.update(stories)
-      .set({ audioCharacterCount: characterCount })
-      .where(eq(stories.id, story.id))
   })
 
   const audioHash = computeAudioHash({
@@ -221,17 +263,41 @@ export async function processStoryAudioJob(
   }
 
   if (!story.text) {
-    // Refund credits on failure
-    // Use character count if available, otherwise fallback to old calculation
-    const audioCost = story.audioCharacterCount ?? calcAudioCost(story.length as "short" | "medium" | "long")
-    await database.insert(storyCreditTransactions).values({
-      userId: params.userId,
-      storyId: story.id,
-      type: "refund",
-      amount: audioCost,
-      reason: "audio_failed",
-      source: "audio_worker",
-    })
+    // Check if audio star was used (reserve transaction exists)
+    const [audioStarReserve] = await database
+      .select()
+      .from(audioStarTransactions)
+      .where(
+        and(
+          eq(audioStarTransactions.userId, params.userId),
+          eq(audioStarTransactions.storyId, story.id),
+          eq(audioStarTransactions.type, "reserve")
+        )
+      )
+      .limit(1)
+
+    if (audioStarReserve) {
+      // Refund audio star
+      await database.insert(audioStarTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "refund",
+        amount: 1, // 1 hang = 1 csillag
+        reason: "audio_failed",
+        source: "audio_worker",
+      })
+    } else {
+      // Refund credits on failure
+      const audioCost = await calcAudioCost(story.length as "short" | "medium" | "long", database)
+      await database.insert(storyCreditTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "refund",
+        amount: audioCost,
+        reason: "audio_failed",
+        source: "audio_worker",
+      })
+    }
     await repo.updateAudio(story.id, {
       audioStatus: "failed",
       audioError: "Story text missing",
@@ -250,17 +316,8 @@ export async function processStoryAudioJob(
     return
   }
 
-  // Calculate audio cost based on character count (1 character = 1 credit)
-  // Use stored character count if available, otherwise calculate from text
-  const characterCount = story.audioCharacterCount ?? story.text.length
-  const audioCost = characterCount // 1 character = 1 credit
-  
-  // Save character count if not already saved
-  if (!story.audioCharacterCount && story.text) {
-    await database.update(stories)
-      .set({ audioCharacterCount: story.text.length })
-      .where(eq(stories.id, story.id))
-  }
+  // Calculate audio cost based on story length (fixed pricing from database)
+  const audioCost = await calcAudioCost(story.length as "short" | "medium" | "long", database)
 
   try {
     await repo.updateAudio(story.id, {
@@ -312,21 +369,63 @@ export async function processStoryAudioJob(
       audioUpdatedAt: now(),
     })
 
-    // Commit credits (convert reserve to actual charge)
-    // In a real system, you might want to mark the reserve as committed
-    // For simplicity, we'll just ensure the transaction exists
+    // Commit payment (convert reserve to actual charge)
+    // Check if audio star was used (reserve transaction exists)
+    const [audioStarReserve] = await database
+      .select()
+      .from(audioStarTransactions)
+      .where(
+        and(
+          eq(audioStarTransactions.userId, params.userId),
+          eq(audioStarTransactions.storyId, story.id),
+          eq(audioStarTransactions.type, "reserve")
+        )
+      )
+      .limit(1)
+
+    if (audioStarReserve) {
+      // Audio star was used, transaction already committed (reserve = -1, no need to do anything)
+      // The reserve transaction itself is the charge
+    } else {
+      // Credits were used, transaction already committed (reserve = -cost, no need to do anything)
+      // The reserve transaction itself is the charge
+    }
   } catch (error) {
-    // Refund credits on failure
-    // Use character count if available, otherwise fallback to old calculation
-    const refundAmount = story.audioCharacterCount ?? calcAudioCost(story.length as "short" | "medium" | "long")
-    await database.insert(storyCreditTransactions).values({
-      userId: params.userId,
-      storyId: story.id,
-      type: "refund",
-      amount: refundAmount,
-      reason: "audio_failed",
-      source: "audio_worker",
-    })
+    // Check if audio star was used (reserve transaction exists)
+    const [audioStarReserve] = await database
+      .select()
+      .from(audioStarTransactions)
+      .where(
+        and(
+          eq(audioStarTransactions.userId, params.userId),
+          eq(audioStarTransactions.storyId, story.id),
+          eq(audioStarTransactions.type, "reserve")
+        )
+      )
+      .limit(1)
+
+    if (audioStarReserve) {
+      // Refund audio star
+      await database.insert(audioStarTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "refund",
+        amount: 1, // 1 hang = 1 csillag
+        reason: "audio_failed",
+        source: "audio_worker",
+      })
+    } else {
+      // Refund credits on failure
+      const refundAmount = await calcAudioCost(story.length as "short" | "medium" | "long", database)
+      await database.insert(storyCreditTransactions).values({
+        userId: params.userId,
+        storyId: story.id,
+        type: "refund",
+        amount: refundAmount,
+        reason: "audio_failed",
+        source: "audio_worker",
+      })
+    }
     await repo.updateAudio(story.id, {
       audioStatus: "failed",
       audioError: error instanceof Error ? error.message : "Unknown error",
@@ -372,4 +471,144 @@ async function bufferFromAudio(audio: unknown): Promise<Buffer> {
 
 export function createAudioJobId(): string {
   return randomUUID()
+}
+
+export type FreeStoryAudioRow = {
+  id: string
+  text: string
+  audioUrl: string | null
+  audioStatus: string
+  audioError: string | null
+  audioHash: string | null
+  audioCharacterCount: number | null
+}
+
+export type FreeStoryAudioRepo = {
+  getStoryById(storyId: string): Promise<FreeStoryAudioRow | null>
+  updateAudio(storyId: string, payload: AudioUpdate): Promise<void>
+}
+
+export function createFreeStoryAudioRepo(
+  database: PostgresJsDatabase<Record<string, unknown>>,
+): FreeStoryAudioRepo {
+  return {
+    async getStoryById(storyId) {
+      const [row] = await database
+        .select({
+          id: freeStories.id,
+          text: freeStories.text,
+          audioUrl: freeStories.audioUrl,
+          audioStatus: freeStories.audioStatus,
+          audioError: freeStories.audioError,
+          audioHash: freeStories.audioHash,
+          audioCharacterCount: freeStories.audioCharacterCount,
+        })
+        .from(freeStories)
+        .where(eq(freeStories.id, storyId))
+        .limit(1)
+      return row ?? null
+    },
+    async updateAudio(storyId, payload) {
+      await database.update(freeStories).set(payload).where(eq(freeStories.id, storyId))
+    },
+  }
+}
+
+export async function processFreeStoryAudioJob(
+  params: { storyId: string },
+  deps?: {
+    repo?: FreeStoryAudioRepo
+    elevenlabs?: ElevenLabsClient
+    s3?: { uploadBuffer: typeof uploadBuffer; buildPublicUrl: typeof buildPublicUrl }
+    now?: () => Date
+    db?: typeof db
+  },
+): Promise<void> {
+  const repo = deps?.repo ?? createFreeStoryAudioRepo(db)
+  const database = deps?.db ?? db
+  const now = deps?.now ?? (() => new Date())
+  const story = await repo.getStoryById(params.storyId)
+
+  if (!story) {
+    throw new Error("Free story not found")
+  }
+
+  if (!story.text) {
+    await repo.updateAudio(params.storyId, {
+      audioStatus: "failed",
+      audioError: "Story text missing",
+      audioUpdatedAt: now(),
+    })
+    return
+  }
+
+  const force = false // Free stories don't support force regeneration for now
+  if (!force && story.audioUrl) {
+    await repo.updateAudio(params.storyId, {
+      audioStatus: "ready",
+      audioError: null,
+      audioUpdatedAt: now(),
+    })
+    return
+  }
+
+  // Calculate audio cost based on character count (1 character = 1 credit)
+  const characterCount = story.audioCharacterCount ?? story.text.length
+
+  try {
+    await repo.updateAudio(params.storyId, {
+      audioStatus: "generating",
+      audioError: null,
+      audioVoiceId: AUDIO_VOICE_ID,
+      audioPreset: AUDIO_PRESET,
+      audioUpdatedAt: now(),
+      audioHash: computeAudioHash({
+        voiceId: AUDIO_VOICE_ID,
+        preset: AUDIO_PRESET,
+        text: story.text,
+      }),
+    })
+
+    const token = process.env.ELEVENLABS_TOKEN
+    if (!token) throw new Error("ELEVENLABS_TOKEN is missing")
+
+    const client =
+      deps?.elevenlabs ??
+      new ElevenLabsClient({
+        apiKey: token,
+      })
+
+    const audio = await client.textToSpeech.convert(AUDIO_VOICE_ID, {
+      text: story.text,
+      modelId: AUDIO_MODEL_ID,
+      outputFormat: AUDIO_OUTPUT_FORMAT,
+    })
+
+    const audioBuffer = await bufferFromAudio(audio)
+    const key = buildFreeStoryAudioKey(story.id)
+    const s3Client = deps?.s3 ?? { uploadBuffer, buildPublicUrl }
+
+    await s3Client.uploadBuffer({
+      key,
+      body: audioBuffer,
+      contentType: "audio/mpeg",
+      cacheControl: AUDIO_CACHE_CONTROL,
+    })
+
+    const audioUrl = s3Client.buildPublicUrl(key)
+
+    await repo.updateAudio(params.storyId, {
+      audioStatus: "ready",
+      audioUrl,
+      audioError: null,
+      audioUpdatedAt: now(),
+    })
+  } catch (error) {
+    await repo.updateAudio(params.storyId, {
+      audioStatus: "failed",
+      audioError: error instanceof Error ? error.message : "Unknown error",
+      audioUpdatedAt: now(),
+    })
+    throw error
+  }
 }

@@ -47,6 +47,19 @@
     MINIO_ROOT_PASSWORD = "barnimesei123";
     MINIO_DEFAULT_BUCKETS = "barnimesei";
 
+
+    MAIL_PROVIDER = "nodemailer";
+    MAIL_FROM = "noreply@yourapp.com";
+    SMTP_HOST = "127.0.0.1";
+    SMTP_PORT = "1025";
+    SMTP_SECURE = "false";
+    SMTP_USER = "your-email@gmail.com";
+    SMTP_PASS = "your-app-password";
+    MAILGUN_API_KEY = "your-mailgun-api-key";
+    MAILGUN_DOMAIN = "your-mailgun-domain.com";
+    MAILGUN_BASE_URL = "https://api.mailgun.net";
+
+
     # Go / CGO / libvips
     CGO_ENABLED = "1";
     PKG_CONFIG_PATH =
@@ -75,6 +88,10 @@
   # Services
   ####################
   services = {
+    mailpit.enable = true;
+
+
+
     postgres = {
       enable = true;
       listen_addresses = "127.0.0.1";

@@ -55,7 +55,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           ? THEMES[Math.floor(Math.random() * THEMES.length)]
           : body.theme
 
-      const creditCost = calcCost(body.length)
+      const creditCost = await calcCost(body.length, body.isInteractive ?? false)
 
       const result = await db.transaction(async (tx) => {
         const balance = await getUserCreditBalance(tx, userId)
@@ -74,6 +74,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
             length: body.length,
             lesson: body.lesson?.trim() || null,
             creditCost,
+            isInteractive: body.isInteractive ?? false,
           })
           .returning({ id: stories.id })
 
@@ -125,6 +126,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         length: t.Union(lengthValues.map((v) => t.Literal(v))),
         theme: t.String(),
         lesson: t.Optional(t.String()),
+        isInteractive: t.Optional(t.Boolean()),
       }),
     },
   )
@@ -171,6 +173,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           mood: stories.mood,
           length: stories.length,
           errorMessage: stories.errorMessage,
+          isInteractive: stories.isInteractive,
         })
         .from(stories)
         .where(eq(stories.childId, childId))
@@ -218,6 +221,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
             mood: r.mood,
             length: r.length,
             error_message: r.errorMessage,
+            is_interactive: r.isInteractive,
           }
         }),
       )
@@ -307,6 +311,8 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           tone: stories.tone,
           audioUrl: stories.audioUrl,
           audioStatus: stories.audioStatus,
+          isInteractive: stories.isInteractive,
+          storyData: stories.storyData,
         })
         .from(stories)
         .where(and(eq(stories.id, storyId), eq(stories.userId, userId)))
@@ -374,6 +380,8 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         tone: row.tone,
         audio_url: audioUrl,
         audio_status: row.audioStatus,
+        is_interactive: row.isInteractive,
+        story_data: row.storyData,
       }
     },
     {
@@ -407,7 +415,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
         return { error: "Story not found" }
       }
 
-      const cost = calcAudioCost(row.length as "short" | "medium" | "long")
+      const cost = await calcAudioCost(row.length as "short" | "medium" | "long")
       const hasAudio = row.audioStatus === "ready" && row.audioUrl !== null
 
       return {
@@ -433,6 +441,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           storyId: params.storyId,
           userId: session.user.id,
           force: body.force,
+          paymentMethod: body.paymentMethod,
         },
         {
           enqueue: async (payload) => enqueueAudioJob(payload),
@@ -448,6 +457,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
       }),
       body: t.Object({
         force: t.Optional(t.Boolean()),
+        paymentMethod: t.Optional(t.Union([t.Literal("audioStar"), t.Literal("credits")])),
       }),
     },
   )
@@ -459,12 +469,18 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
 
       const storyId = params.storyId
       const userId = session.user.id
-      const { type } = body
+      const { type, comment } = body
 
       // Validate feedback type
-      if (!["like", "sleep", "more"].includes(type)) {
+      if (!["like", "sleep", "more", "dislike"].includes(type)) {
         set.status = 400
         return { error: "Invalid feedback type" }
+      }
+
+      // Validate comment is provided for dislike
+      if (type === "dislike" && (!comment || comment.trim().length === 0)) {
+        set.status = 400
+        return { error: "Comment is required for dislike feedback" }
       }
 
       // Check if story exists and belongs to user
@@ -501,19 +517,22 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           storyId,
           userId,
           childId: story.childId,
-          type: type as "like" | "sleep" | "more",
+          type: type as "like" | "sleep" | "more" | "dislike",
+          comment: comment?.trim() || null,
         })
-        .returning({ id: storyFeedback.id, type: storyFeedback.type })
+        .returning({ id: storyFeedback.id, type: storyFeedback.type, comment: storyFeedback.comment })
 
       return {
         ok: true,
         alreadySubmitted: false,
         type: feedback.type,
+        comment: feedback.comment,
       }
     },
     {
       body: t.Object({
-        type: t.Union([t.Literal("like"), t.Literal("sleep"), t.Literal("more")]),
+        type: t.Union([t.Literal("like"), t.Literal("sleep"), t.Literal("more"), t.Literal("dislike")]),
+        comment: t.Optional(t.String()),
       }),
       params: t.Object({
         storyId: t.String(),

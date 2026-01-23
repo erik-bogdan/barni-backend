@@ -1,18 +1,21 @@
 import amqp from "amqplib"
 
 import { db } from "../lib/db"
-import { createAudioRepo, processStoryAudioJob } from "../services/audio"
+import { createAudioRepo, processStoryAudioJob, createFreeStoryAudioRepo, processFreeStoryAudioJob } from "../services/audio"
 import { buildPublicUrl, uploadBuffer } from "../services/s3"
 import { AUDIO_QUEUE } from "./audio-queue"
+import { createCoverRepo, processCoverJob, createFreeStoryCoverRepo, processFreeStoryCoverJob } from "../services/cover/coverService"
 
 const rabbitUrl = process.env.RABBITMQ_URL || "amqp://localhost:5672"
 
 const audioRepo = createAudioRepo(db)
+const freeStoryAudioRepo = createFreeStoryAudioRepo(db)
 
 type AudioJobPayload = {
   jobId: string
+  jobType?: string
   storyId: string
-  userId: string
+  userId?: string
   force?: boolean
 }
 
@@ -30,15 +33,62 @@ async function startAudioWorker() {
     const attempts = Number(headers.attempts ?? 0)
     try {
       const payload = JSON.parse(msg.content.toString()) as AudioJobPayload
-      if (!payload.storyId || !payload.userId) throw new Error("Missing storyId or userId")
+      if (!payload.storyId) throw new Error("Missing storyId")
 
-      await processStoryAudioJob(
-        { storyId: payload.storyId, userId: payload.userId, force: payload.force },
-        {
-          repo: audioRepo,
-          s3: { uploadBuffer, buildPublicUrl },
-        },
-      )
+      // Handle cover generation jobs
+      if (payload.jobType === "cover.generate") {
+        // Check if it's a free story or regular story
+        const freeStoryRepo = createFreeStoryCoverRepo(db)
+        const freeStory = await freeStoryRepo.getStoryById(payload.storyId)
+        
+        if (freeStory) {
+          // Free story cover
+          await processFreeStoryCoverJob(
+            { storyId: payload.storyId },
+            {
+              repo: freeStoryRepo,
+              s3: { uploadBuffer, buildPublicUrl },
+            },
+          )
+        } else {
+          // Regular story cover
+          const coverRepo = createCoverRepo(db)
+          await processCoverJob(
+            { storyId: payload.storyId },
+            {
+              repo: coverRepo,
+              s3: { uploadBuffer, buildPublicUrl },
+            },
+          )
+        }
+        channel.ack(msg)
+        console.log(`[audio-worker] cover completed ${payload.storyId}`)
+        return
+      }
+
+      // Handle audio generation jobs
+      if (!payload.userId) throw new Error("Missing userId for audio job")
+
+      // Check if it's a free story (userId is empty string) or regular story
+      if (payload.userId === "") {
+        // Free story audio
+        await processFreeStoryAudioJob(
+          { storyId: payload.storyId },
+          {
+            repo: freeStoryAudioRepo,
+            s3: { uploadBuffer, buildPublicUrl },
+          },
+        )
+      } else {
+        // Regular story audio
+        await processStoryAudioJob(
+          { storyId: payload.storyId, userId: payload.userId, force: payload.force },
+          {
+            repo: audioRepo,
+            s3: { uploadBuffer, buildPublicUrl },
+          },
+        )
+      }
 
       channel.ack(msg)
       console.log(`[audio-worker] completed ${payload.storyId}`)
@@ -47,11 +97,25 @@ async function startAudioWorker() {
       let payload: AudioJobPayload | null = null
       try {
         payload = JSON.parse(msg.content.toString()) as AudioJobPayload
-        await audioRepo.updateAudio(payload.storyId, {
-          audioStatus: "failed",
-          audioError: error?.message ?? "Audio generation failed",
-          audioUpdatedAt: new Date(),
-        })
+        
+        // Only update audio status if it's an audio job (not cover)
+        if (payload.jobType !== "cover.generate" && payload.storyId) {
+          if (payload.userId === "") {
+            // Free story
+            await freeStoryAudioRepo.updateAudio(payload.storyId, {
+              audioStatus: "failed",
+              audioError: error?.message ?? "Audio generation failed",
+              audioUpdatedAt: new Date(),
+            })
+          } else if (payload.userId) {
+            // Regular story
+            await audioRepo.updateAudio(payload.storyId, {
+              audioStatus: "failed",
+              audioError: error?.message ?? "Audio generation failed",
+              audioUpdatedAt: new Date(),
+            })
+          }
+        }
       } catch (updateErr) {
         console.error("[audio-worker] failed to mark story", updateErr)
       }

@@ -2,13 +2,17 @@ import { Elysia, t } from 'elysia'
 import { sql, eq, desc, gte, and, or } from 'drizzle-orm'
 
 import { db } from '../lib/db'
+import { auth } from '../lib/auth'
 import { betterAuthMiddleware } from '../plugins/auth/middleware'
 import { requireRole } from '../plugins/auth/requireRole'
-import { user, stories, orders, pricingPlans, coupons, orderItems, storyTransactions, storyCreditTransactions, children, stripeEvents, payments } from '../../packages/db/src/schema'
+import { user, stories, orders, pricingPlans, coupons, orderItems, storyTransactions, storyCreditTransactions, audioStarTransactions, children, stripeEvents, payments, storyFeedback, freeStories, storyPricing, feedbacks, feedbackReplies } from '../../packages/db/src/schema'
 import { calculateGPTCost, calculateAudioCost } from '../services/gpt-cost'
 import { getPresignedUrl } from '../services/s3'
-import { buildCoverKey, buildCoverSquareKey } from '../services/cover/coverService'
-import { buildAudioKey } from '../services/audio'
+import { buildCoverKey, buildCoverSquareKey, processFreeStoryCoverJob, buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from '../services/cover/coverService'
+import { buildAudioKey, buildFreeStoryAudioKey } from '../services/audio'
+import { enqueueCoverJob } from '../jobs/cover-queue'
+import { enqueueAudioJob } from '../jobs/audio-queue'
+import { invalidatePricingCache } from '../services/credits'
 
 export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
   .use(betterAuthMiddleware)
@@ -519,6 +523,306 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       })),
     }
   })
+  .post(
+    '/users/:id/credit-transactions',
+    async ({ params, body, set }) => {
+      try {
+        const [transaction] = await db
+          .insert(storyCreditTransactions)
+          .values({
+            userId: params.id,
+            storyId: body.storyId || null,
+            orderId: body.orderId || null,
+            type: body.type || 'manual',
+            amount: body.amount,
+            reason: body.reason || null,
+            source: body.source || 'admin',
+          })
+          .returning()
+
+        if (!transaction) {
+          set.status = 500
+          return { error: 'Failed to create transaction' }
+        }
+
+        return {
+          transaction: {
+            id: Number(transaction.id),
+            userId: transaction.userId,
+            storyId: transaction.storyId || null,
+            orderId: transaction.orderId || null,
+            type: transaction.type,
+            amount: Number(transaction.amount),
+            reason: transaction.reason || null,
+            source: transaction.source || null,
+            createdAt: transaction.createdAt instanceof Date ? transaction.createdAt.toISOString() : String(transaction.createdAt || ''),
+          },
+        }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to create transaction' }
+      }
+    },
+    {
+      body: t.Object({
+        storyId: t.Optional(t.Nullable(t.String())),
+        orderId: t.Optional(t.Nullable(t.String())),
+        type: t.Optional(t.String()),
+        amount: t.Number(),
+        reason: t.Optional(t.Nullable(t.String())),
+        source: t.Optional(t.Nullable(t.String())),
+      }),
+    }
+  )
+  .patch(
+    '/users/:id/credit-transactions/:transactionId',
+    async ({ params, body, set }) => {
+      try {
+        const updateData: any = {}
+        if (body.storyId !== undefined) updateData.storyId = body.storyId
+        if (body.orderId !== undefined) updateData.orderId = body.orderId
+        if (body.type !== undefined) updateData.type = body.type
+        if (body.amount !== undefined) updateData.amount = body.amount
+        if (body.reason !== undefined) updateData.reason = body.reason
+        if (body.source !== undefined) updateData.source = body.source
+
+        const [transaction] = await db
+          .update(storyCreditTransactions)
+          .set(updateData)
+          .where(
+            and(
+              eq(storyCreditTransactions.id, Number(params.transactionId)),
+              eq(storyCreditTransactions.userId, params.id)
+            )
+          )
+          .returning()
+
+        if (!transaction) {
+          set.status = 404
+          return { error: 'Transaction not found' }
+        }
+
+        return {
+          transaction: {
+            id: Number(transaction.id),
+            userId: transaction.userId,
+            storyId: transaction.storyId || null,
+            orderId: transaction.orderId || null,
+            type: transaction.type,
+            amount: Number(transaction.amount),
+            reason: transaction.reason || null,
+            source: transaction.source || null,
+            createdAt: transaction.createdAt instanceof Date ? transaction.createdAt.toISOString() : String(transaction.createdAt || ''),
+          },
+        }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to update transaction' }
+      }
+    },
+    {
+      body: t.Object({
+        storyId: t.Optional(t.Nullable(t.String())),
+        orderId: t.Optional(t.Nullable(t.String())),
+        type: t.Optional(t.String()),
+        amount: t.Optional(t.Number()),
+        reason: t.Optional(t.Nullable(t.String())),
+        source: t.Optional(t.Nullable(t.String())),
+      }),
+    }
+  )
+  .delete(
+    '/users/:id/credit-transactions/:transactionId',
+    async ({ params, set }) => {
+      try {
+        const [transaction] = await db
+          .delete(storyCreditTransactions)
+          .where(
+            and(
+              eq(storyCreditTransactions.id, Number(params.transactionId)),
+              eq(storyCreditTransactions.userId, params.id)
+            )
+          )
+          .returning()
+
+        if (!transaction) {
+          set.status = 404
+          return { error: 'Transaction not found' }
+        }
+
+        return { success: true }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to delete transaction' }
+      }
+    }
+  )
+  .get('/users/:id/audio-star-transactions', async ({ params }) => {
+    const transactions = await db
+      .select({
+        id: audioStarTransactions.id,
+        userId: audioStarTransactions.userId,
+        storyId: audioStarTransactions.storyId,
+        orderId: audioStarTransactions.orderId,
+        type: audioStarTransactions.type,
+        amount: audioStarTransactions.amount,
+        reason: audioStarTransactions.reason,
+        source: audioStarTransactions.source,
+        createdAt: audioStarTransactions.createdAt,
+      })
+      .from(audioStarTransactions)
+      .where(eq(audioStarTransactions.userId, params.id))
+      .orderBy(desc(audioStarTransactions.createdAt))
+
+    // Convert dates to strings
+    return {
+      transactions: transactions.map((t) => ({
+        id: Number(t.id),
+        userId: t.userId,
+        storyId: t.storyId || null,
+        orderId: t.orderId || null,
+        type: t.type,
+        amount: Number(t.amount),
+        reason: t.reason || null,
+        source: t.source || null,
+        createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt || ''),
+      })),
+    }
+  })
+  .post(
+    '/users/:id/audio-star-transactions',
+    async ({ params, body, set }) => {
+      try {
+        const [transaction] = await db
+          .insert(audioStarTransactions)
+          .values({
+            userId: params.id,
+            storyId: body.storyId || null,
+            orderId: body.orderId || null,
+            type: body.type || 'manual',
+            amount: body.amount,
+            reason: body.reason || null,
+            source: body.source || 'admin',
+          })
+          .returning()
+
+        if (!transaction) {
+          set.status = 500
+          return { error: 'Failed to create transaction' }
+        }
+
+        return {
+          transaction: {
+            id: Number(transaction.id),
+            userId: transaction.userId,
+            storyId: transaction.storyId || null,
+            orderId: transaction.orderId || null,
+            type: transaction.type,
+            amount: Number(transaction.amount),
+            reason: transaction.reason || null,
+            source: transaction.source || null,
+            createdAt: transaction.createdAt instanceof Date ? transaction.createdAt.toISOString() : String(transaction.createdAt || ''),
+          },
+        }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to create transaction' }
+      }
+    },
+    {
+      body: t.Object({
+        storyId: t.Optional(t.Nullable(t.String())),
+        orderId: t.Optional(t.Nullable(t.String())),
+        type: t.Optional(t.String()),
+        amount: t.Number(),
+        reason: t.Optional(t.Nullable(t.String())),
+        source: t.Optional(t.Nullable(t.String())),
+      }),
+    }
+  )
+  .patch(
+    '/users/:id/audio-star-transactions/:transactionId',
+    async ({ params, body, set }) => {
+      try {
+        const updateData: any = {}
+        if (body.storyId !== undefined) updateData.storyId = body.storyId
+        if (body.orderId !== undefined) updateData.orderId = body.orderId
+        if (body.type !== undefined) updateData.type = body.type
+        if (body.amount !== undefined) updateData.amount = body.amount
+        if (body.reason !== undefined) updateData.reason = body.reason
+        if (body.source !== undefined) updateData.source = body.source
+
+        const [transaction] = await db
+          .update(audioStarTransactions)
+          .set(updateData)
+          .where(
+            and(
+              eq(audioStarTransactions.id, Number(params.transactionId)),
+              eq(audioStarTransactions.userId, params.id)
+            )
+          )
+          .returning()
+
+        if (!transaction) {
+          set.status = 404
+          return { error: 'Transaction not found' }
+        }
+
+        return {
+          transaction: {
+            id: Number(transaction.id),
+            userId: transaction.userId,
+            storyId: transaction.storyId || null,
+            orderId: transaction.orderId || null,
+            type: transaction.type,
+            amount: Number(transaction.amount),
+            reason: transaction.reason || null,
+            source: transaction.source || null,
+            createdAt: transaction.createdAt instanceof Date ? transaction.createdAt.toISOString() : String(transaction.createdAt || ''),
+          },
+        }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to update transaction' }
+      }
+    },
+    {
+      body: t.Object({
+        storyId: t.Optional(t.Nullable(t.String())),
+        orderId: t.Optional(t.Nullable(t.String())),
+        type: t.Optional(t.String()),
+        amount: t.Optional(t.Number()),
+        reason: t.Optional(t.Nullable(t.String())),
+        source: t.Optional(t.Nullable(t.String())),
+      }),
+    }
+  )
+  .delete(
+    '/users/:id/audio-star-transactions/:transactionId',
+    async ({ params, set }) => {
+      try {
+        const [transaction] = await db
+          .delete(audioStarTransactions)
+          .where(
+            and(
+              eq(audioStarTransactions.id, Number(params.transactionId)),
+              eq(audioStarTransactions.userId, params.id)
+            )
+          )
+          .returning()
+
+        if (!transaction) {
+          set.status = 404
+          return { error: 'Transaction not found' }
+        }
+
+        return { success: true }
+      } catch (error: any) {
+        set.status = 500
+        return { error: error?.message || 'Failed to delete transaction' }
+      }
+    }
+  )
   .get('/users/:id/stats', async ({ params }) => {
     const userId = params.id
 
@@ -600,7 +904,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
   })
   // Pricing Plans CRUD
   .get('/pricing-plans', async () => {
-    const plans = await db.select().from(pricingPlans).orderBy(pricingPlans.createdAt)
+    const plans = await db.select().from(pricingPlans).orderBy(pricingPlans.credits)
     return { plans }
   })
   .get('/pricing-plans/:id', async ({ params }) => {
@@ -626,6 +930,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             credits: body.credits,
             currency: body.currency || 'HUF',
             priceCents: body.priceCents,
+            description: body.description || null,
             isActive: body.isActive ?? true,
             promoEnabled: body.promoEnabled ?? false,
             promoType: body.promoType || null,
@@ -633,6 +938,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             promoPriceCents: body.promoPriceCents ?? null,
             promoStartsAt: body.promoStartsAt ? new Date(body.promoStartsAt) : null,
             promoEndsAt: body.promoEndsAt ? new Date(body.promoEndsAt) : null,
+            bonusAudioStars: body.bonusAudioStars ?? 0,
+            bonusCredits: body.bonusCredits ?? 0,
           })
           .returning()
         return { plan }
@@ -653,6 +960,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         credits: t.Number(),
         currency: t.Optional(t.String()),
         priceCents: t.Number(),
+        description: t.Optional(t.Nullable(t.String())),
         isActive: t.Optional(t.Boolean()),
         promoEnabled: t.Optional(t.Boolean()),
         promoType: t.Optional(t.Nullable(t.Union([t.Literal('percent'), t.Literal('amount')]))),
@@ -660,6 +968,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         promoPriceCents: t.Optional(t.Nullable(t.Number())),
         promoStartsAt: t.Optional(t.Nullable(t.String())),
         promoEndsAt: t.Optional(t.Nullable(t.String())),
+        bonusAudioStars: t.Optional(t.Number()),
+        bonusCredits: t.Optional(t.Number()),
       }),
     }
   )
@@ -672,6 +982,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       if (body.credits !== undefined) updateData.credits = body.credits
       if (body.currency !== undefined) updateData.currency = body.currency
       if (body.priceCents !== undefined) updateData.priceCents = body.priceCents
+      if (body.description !== undefined) updateData.description = body.description || null
       if (body.isActive !== undefined) updateData.isActive = body.isActive
       if (body.promoEnabled !== undefined) updateData.promoEnabled = body.promoEnabled
       if (body.promoType !== undefined) updateData.promoType = body.promoType
@@ -683,6 +994,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       if (body.promoEndsAt !== undefined) {
         updateData.promoEndsAt = body.promoEndsAt ? new Date(body.promoEndsAt) : null
       }
+      if (body.bonusAudioStars !== undefined) updateData.bonusAudioStars = body.bonusAudioStars
+      if (body.bonusCredits !== undefined) updateData.bonusCredits = body.bonusCredits
       updateData.updatedAt = new Date()
 
       try {
@@ -712,6 +1025,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         credits: t.Optional(t.Number()),
         currency: t.Optional(t.String()),
         priceCents: t.Optional(t.Number()),
+        description: t.Optional(t.Nullable(t.String())),
         isActive: t.Optional(t.Boolean()),
         promoEnabled: t.Optional(t.Boolean()),
         promoType: t.Optional(t.Nullable(t.Union([t.Literal('percent'), t.Literal('amount')]))),
@@ -719,6 +1033,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         promoPriceCents: t.Optional(t.Nullable(t.Number())),
         promoStartsAt: t.Optional(t.Nullable(t.String())),
         promoEndsAt: t.Optional(t.Nullable(t.String())),
+        bonusAudioStars: t.Optional(t.Number()),
+        bonusCredits: t.Optional(t.Number()),
       }),
     }
   )
@@ -910,6 +1226,9 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         creditsTotal: orders.creditsTotal,
         provider: orders.provider,
         stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
+        barionPaymentId: orders.barionPaymentId,
+        barionPaymentRequestId: orders.barionPaymentRequestId,
+        barionCustomerId: orders.barionCustomerId,
         billingoInvoiceId: orders.billingoInvoiceId,
         createdAt: orders.createdAt,
         updatedAt: orders.updatedAt,
@@ -955,6 +1274,9 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         stripeCheckoutSessionId: orders.stripeCheckoutSessionId,
         stripePaymentIntentId: orders.stripePaymentIntentId,
         stripeCustomerId: orders.stripeCustomerId,
+        barionPaymentId: orders.barionPaymentId,
+        barionPaymentRequestId: orders.barionPaymentRequestId,
+        barionCustomerId: orders.barionCustomerId,
         billingoInvoiceId: orders.billingoInvoiceId,
         createdAt: orders.createdAt,
         updatedAt: orders.updatedAt,
@@ -975,17 +1297,83 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       .from(orderItems)
       .where(eq(orderItems.orderId, params.id))
 
+    // Get payment details
+    const paymentList = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.orderId, params.id))
+      .orderBy(desc(payments.createdAt))
+
     return {
       order: {
         ...order,
         items,
+        payments: paymentList.map((p) => ({
+          id: p.id,
+          provider: p.provider,
+          status: p.status,
+          amountCents: p.amountCents,
+          currency: p.currency,
+          stripePaymentIntentId: p.stripePaymentIntentId,
+          stripeChargeId: p.stripeChargeId,
+          barionPaymentId: p.barionPaymentId,
+          barionTransactionId: p.barionTransactionId,
+          failureCode: p.failureCode,
+          failureMessage: p.failureMessage,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        })),
       },
     }
+  })
+  .get('/orders/:id/invoice', async ({ params, set }) => {
+    const [order] = await db
+      .select({
+        id: orders.id,
+        status: orders.status,
+        billingoInvoiceId: orders.billingoInvoiceId,
+      })
+      .from(orders)
+      .where(eq(orders.id, params.id))
+      .limit(1)
+
+    if (!order) {
+      set.status = 404
+      return { error: 'Order not found' }
+    }
+
+    if (order.status !== 'paid') {
+      set.status = 400
+      return { error: 'Invoice only available for paid orders' }
+    }
+
+    if (!order.billingoInvoiceId) {
+      set.status = 404
+      return { error: 'Invoice not found' }
+    }
+
+    try {
+      // Get invoice public URL from Billingo
+      const { getInvoicePublicUrl } = await import('../services/billingo')
+      const invoiceUrl = await getInvoicePublicUrl(order.billingoInvoiceId)
+
+      // Return URL instead of redirecting (for admin use)
+      return { invoiceUrl }
+    } catch (error: any) {
+      console.error('[Invoice] Failed to get invoice URL:', error)
+      set.status = 500
+      return { error: 'Failed to retrieve invoice' }
+    }
+  }, {
+    params: t.Object({
+      id: t.String(),
+    }),
   })
   // Stories management
   .get('/stories', async ({ query }) => {
     const startDate = query.startDate ? new Date(query.startDate) : null
     const endDate = query.endDate ? new Date(query.endDate) : null
+    const feedbackType = query.feedbackType as string | undefined
 
     // Build where conditions
     const conditions = []
@@ -1011,6 +1399,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         audioStatus: stories.audioStatus,
         audioCharacterCount: stories.audioCharacterCount,
         model: stories.model,
+        length: stories.length,
+        isInteractive: stories.isInteractive,
         createdAt: stories.createdAt,
         readyAt: stories.readyAt,
         userName: user.name,
@@ -1023,8 +1413,8 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       .where(conditions.length > 0 ? sql`${sql.join(conditions, sql` AND `)}` : undefined)
       .orderBy(desc(stories.createdAt))
 
-    // Get token usage and model for each story
-    const storiesWithTokens = await Promise.all(
+    // Get token usage and model for each story, along with feedback
+    let storiesWithTokens = await Promise.all(
       storyList.map(async (story) => {
         const [tokenData] = await db
           .select({
@@ -1048,6 +1438,21 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         // Convert to HUF using same rate as GPT tokens
         const audioCostCents = calculateAudioCost(story.audioCharacterCount)
 
+        // Get feedback for this story
+        const feedbackList = await db
+          .select({
+            id: storyFeedback.id,
+            type: storyFeedback.type,
+            comment: storyFeedback.comment,
+            createdAt: storyFeedback.createdAt,
+            userName: user.name,
+            userEmail: user.email,
+          })
+          .from(storyFeedback)
+          .leftJoin(user, eq(storyFeedback.userId, user.id))
+          .where(eq(storyFeedback.storyId, story.id))
+          .orderBy(desc(storyFeedback.createdAt))
+
         return {
           ...story,
           totalTokens: Number(tokenData?.totalTokens ?? 0),
@@ -1057,9 +1462,23 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
           gptCostCents,
           audioCharacterCount: story.audioCharacterCount,
           audioCostCents,
+          feedback: feedbackList,
         }
       })
     )
+
+    // Filter by feedback type if specified
+    if (feedbackType) {
+      if (feedbackType === 'none') {
+        // Show only stories with no feedback
+        storiesWithTokens = storiesWithTokens.filter(s => !s.feedback || s.feedback.length === 0)
+      } else {
+        // Show only stories with the specified feedback type
+        storiesWithTokens = storiesWithTokens.filter(s => 
+          s.feedback && s.feedback.some(f => f.type === feedbackType)
+        )
+      }
+    }
 
     // Calculate stats
     const totalStories = storiesWithTokens.length
@@ -1088,6 +1507,17 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     const totalCostCredits = storiesWithTokens.reduce((sum, s) => sum + (s.creditCost || 0), 0)
     const totalCostCentsFromCredits = Math.round(totalCostCredits * (avgCreditPrice || 0))
 
+    // Calculate feedback stats
+    const allFeedback = storiesWithTokens.flatMap(s => s.feedback || [])
+    const feedbackStats = {
+      total: allFeedback.length,
+      like: allFeedback.filter(f => f.type === 'like').length,
+      sleep: allFeedback.filter(f => f.type === 'sleep').length,
+      more: allFeedback.filter(f => f.type === 'more').length,
+      dislike: allFeedback.filter(f => f.type === 'dislike').length,
+      withComment: allFeedback.filter(f => f.comment && f.comment.trim().length > 0).length,
+    }
+
     return {
       stories: storiesWithTokens,
       stats: {
@@ -1101,6 +1531,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         totalAudioCostCents, // Audio cost only
         totalCostCentsFromCredits, // Keep credit-based cost for comparison
         avgCreditPrice: avgCreditPrice || 0,
+        feedback: feedbackStats,
       },
     }
   },
@@ -1108,5 +1539,587 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     query: t.Object({
       startDate: t.Optional(t.String()),
       endDate: t.Optional(t.String()),
+      feedbackType: t.Optional(t.String()),
     }),
+  })
+  // Free Stories endpoints
+  .get('/free-stories', async () => {
+    const allFreeStories = await db
+      .select()
+      .from(freeStories)
+      .orderBy(desc(freeStories.createdAt))
+
+    // Generate presigned URLs for covers
+    const items = await Promise.all(
+      allFreeStories.map(async (story) => {
+        let coverUrl = story.coverUrl
+        let coverSquareUrl = story.coverSquareUrl
+
+        // Generate presigned URL for main cover if it exists
+        if (coverUrl) {
+          try {
+            const coverKey = buildFreeStoryCoverKey(story.id)
+            coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+          } catch (error) {
+            console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+            // Fallback to original URL
+          }
+        }
+
+        // Generate presigned URL for square cover if it exists
+        if (coverSquareUrl) {
+          try {
+            const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
+            coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+          } catch (error) {
+            console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+            // Fallback to original URL
+          }
+        }
+
+        return {
+          ...story,
+          coverUrl,
+          coverSquareUrl,
+        }
+      }),
+    )
+
+    return { items }
+  })
+  .get('/free-stories/:id', async ({ params }) => {
+    const [story] = await db
+      .select()
+      .from(freeStories)
+      .where(eq(freeStories.id, params.id))
+      .limit(1)
+
+    if (!story) {
+      return { error: 'Story not found' }
+    }
+
+    // Generate presigned URLs for covers
+    let coverUrl = story.coverUrl
+    let coverSquareUrl = story.coverSquareUrl
+
+    // Generate presigned URL for main cover if it exists
+    if (coverUrl) {
+      try {
+        const coverKey = buildFreeStoryCoverKey(story.id)
+        coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    // Generate presigned URL for square cover if it exists
+    if (coverSquareUrl) {
+      try {
+        const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
+        coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    // Generate presigned URL for audio if it exists
+    let audioUrl = story.audioUrl
+    if (audioUrl) {
+      try {
+        const audioKey = buildFreeStoryAudioKey(story.id)
+        audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
+      } catch (error) {
+        console.error(`Failed to generate presigned URL for audio ${story.id}:`, error)
+        // Fallback to original URL
+      }
+    }
+
+    return {
+      ...story,
+      coverUrl,
+      coverSquareUrl,
+      audioUrl,
+    }
+  })
+  .post('/free-stories', async ({ body, set }) => {
+    const result = await db
+      .insert(freeStories)
+      .values({
+        status: body.status || 'draft',
+        title: body.title || null,
+        summary: body.summary || null,
+        text: body.text,
+        theme: body.theme,
+        mood: body.mood,
+        length: body.length,
+        lesson: body.lesson || null,
+        setting: body.setting || null,
+        conflict: body.conflict || null,
+        tone: body.tone || null,
+        publishedAt: body.status === 'active' ? new Date() : null,
+      })
+      .returning({ id: freeStories.id })
+
+    if (!result[0]?.id) {
+      set.status = 500
+      return { error: 'Failed to create story' }
+    }
+
+    return { id: result[0].id }
+  }, {
+    body: t.Object({
+      status: t.Optional(t.Union([t.Literal('active'), t.Literal('draft')])),
+      title: t.Optional(t.String()),
+      summary: t.Optional(t.String()),
+      text: t.String(),
+      theme: t.String(),
+      mood: t.String(),
+      length: t.String(),
+      lesson: t.Optional(t.String()),
+      setting: t.Optional(t.String()),
+      conflict: t.Optional(t.String()),
+      tone: t.Optional(t.String()),
+    }),
+  })
+  .patch('/free-stories/:id', async ({ params, body, set }) => {
+    const updateData: any = {}
+    
+    if (body.status !== undefined) updateData.status = body.status
+    if (body.title !== undefined) updateData.title = body.title
+    if (body.summary !== undefined) updateData.summary = body.summary
+    if (body.text !== undefined) updateData.text = body.text
+    if (body.theme !== undefined) updateData.theme = body.theme
+    if (body.mood !== undefined) updateData.mood = body.mood
+    if (body.length !== undefined) updateData.length = body.length
+    if (body.lesson !== undefined) updateData.lesson = body.lesson
+    if (body.setting !== undefined) updateData.setting = body.setting
+    if (body.conflict !== undefined) updateData.conflict = body.conflict
+    if (body.tone !== undefined) updateData.tone = body.tone
+    if (body.audioUrl !== undefined) updateData.audioUrl = body.audioUrl
+    if (body.coverUrl !== undefined) updateData.coverUrl = body.coverUrl
+    if (body.coverSquareUrl !== undefined) updateData.coverSquareUrl = body.coverSquareUrl
+    
+    // Update publishedAt when status changes to active
+    if (body.status === 'active') {
+      updateData.publishedAt = new Date()
+    }
+
+    const result = await db
+      .update(freeStories)
+      .set(updateData)
+      .where(eq(freeStories.id, params.id))
+      .returning({ id: freeStories.id })
+
+    if (!result[0]?.id) {
+      set.status = 404
+      return { error: 'Story not found' }
+    }
+
+    return { success: true }
+  }, {
+    body: t.Object({
+      status: t.Optional(t.Union([t.Literal('active'), t.Literal('draft')])),
+      title: t.Optional(t.String()),
+      summary: t.Optional(t.String()),
+      text: t.Optional(t.String()),
+      theme: t.Optional(t.String()),
+      mood: t.Optional(t.String()),
+      length: t.Optional(t.String()),
+      lesson: t.Optional(t.String()),
+      setting: t.Optional(t.String()),
+      conflict: t.Optional(t.String()),
+      tone: t.Optional(t.String()),
+      audioUrl: t.Optional(t.String()),
+      coverUrl: t.Optional(t.String()),
+      coverSquareUrl: t.Optional(t.String()),
+    }),
+  })
+  .delete('/free-stories/:id', async ({ params, set }) => {
+    const result = await db
+      .delete(freeStories)
+      .where(eq(freeStories.id, params.id))
+      .returning({ id: freeStories.id })
+
+    if (!result[0]?.id) {
+      set.status = 404
+      return { error: 'Story not found' }
+    }
+
+    return { success: true }
+  })
+  .post('/free-stories/:id/generate-cover', async ({ params, set }) => {
+    const [story] = await db
+      .select()
+      .from(freeStories)
+      .where(eq(freeStories.id, params.id))
+      .limit(1)
+
+    if (!story) {
+      set.status = 404
+      return { error: 'Story not found' }
+    }
+
+    if (!story.title) {
+      set.status = 400
+      return { error: 'Story must have a title to generate cover' }
+    }
+
+    try {
+      // Update status to generating
+      await db
+        .update(freeStories)
+        .set({ coverStatus: 'generating', coverError: null })
+        .where(eq(freeStories.id, params.id))
+
+      // Enqueue cover job
+      await enqueueCoverJob({ storyId: params.id })
+
+      return { success: true, message: 'Cover generation started' }
+    } catch (error) {
+      await db
+        .update(freeStories)
+        .set({ coverStatus: 'failed', coverError: error instanceof Error ? error.message : 'Unknown error' })
+        .where(eq(freeStories.id, params.id))
+      set.status = 500
+      return { error: 'Failed to start cover generation' }
+    }
+  })
+  .post('/free-stories/:id/generate-audio', async ({ params, set }) => {
+    const [story] = await db
+      .select()
+      .from(freeStories)
+      .where(eq(freeStories.id, params.id))
+      .limit(1)
+
+    if (!story) {
+      set.status = 404
+      return { error: 'Story not found' }
+    }
+
+    if (!story.text) {
+      set.status = 400
+      return { error: 'Story must have text to generate audio' }
+    }
+
+    try {
+      // Calculate character count
+      const characterCount = story.text.length
+
+      // Update status to generating
+      await db
+        .update(freeStories)
+        .set({ 
+          audioStatus: 'generating', 
+          audioError: null,
+          audioCharacterCount: characterCount,
+        })
+        .where(eq(freeStories.id, params.id))
+
+      // Enqueue audio job (no userId needed for free stories, use empty string)
+      await enqueueAudioJob({ 
+        storyId: params.id, 
+        userId: '', // Free stories don't have userId
+        force: false 
+      })
+
+      return { success: true, message: 'Audio generation started' }
+    } catch (error) {
+      await db
+        .update(freeStories)
+        .set({ audioStatus: 'failed', audioError: error instanceof Error ? error.message : 'Unknown error' })
+        .where(eq(freeStories.id, params.id))
+      set.status = 500
+      return { error: 'Failed to start audio generation' }
+    }
+  })
+  .get('/story-pricing', async () => {
+    const allPricing = await db
+      .select()
+      .from(storyPricing)
+      .orderBy(storyPricing.key)
+
+    return { items: allPricing }
+  })
+  .get('/story-pricing/:key', async ({ params }) => {
+    const [pricing] = await db
+      .select()
+      .from(storyPricing)
+      .where(eq(storyPricing.key, params.key))
+      .limit(1)
+
+    if (!pricing) {
+      return { error: 'Pricing not found' }
+    }
+
+    return pricing
+  })
+  .patch('/story-pricing/:key', async ({ params, body, set }) => {
+    const [existing] = await db
+      .select()
+      .from(storyPricing)
+      .where(eq(storyPricing.key, params.key))
+      .limit(1)
+
+    if (!existing) {
+      set.status = 404
+      return { error: 'Pricing not found' }
+    }
+
+    const result = await db
+      .update(storyPricing)
+      .set({
+        credits: body.credits,
+        updatedAt: new Date(),
+      })
+      .where(eq(storyPricing.key, params.key))
+      .returning({ id: storyPricing.id })
+
+    if (!result[0]?.id) {
+      set.status = 500
+      return { error: 'Failed to update pricing' }
+    }
+
+    // Invalidate cache
+    invalidatePricingCache()
+
+    return { success: true }
+  }, {
+    body: t.Object({
+      credits: t.Number(),
+    }),
+  })
+  // Feedback admin endpoints
+  .get('/feedbacks', async ({ query }) => {
+    const limit = query.limit ? parseInt(query.limit as string) : 50
+    const offset = query.offset ? parseInt(query.offset as string) : 0
+    const status = query.status as string | undefined
+
+    const whereConditions = status ? [eq(feedbacks.status, status as any)] : []
+
+    const allFeedbacks = await db
+      .select({
+        id: feedbacks.id,
+        title: feedbacks.title,
+        content: feedbacks.content,
+        status: feedbacks.status,
+        createdAt: feedbacks.createdAt,
+        updatedAt: feedbacks.updatedAt,
+        closedAt: feedbacks.closedAt,
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+      })
+      .from(feedbacks)
+      .innerJoin(user, eq(feedbacks.userId, user.id))
+      .where(whereConditions.length > 0 ? and(...whereConditions) : undefined)
+      .orderBy(desc(feedbacks.createdAt))
+      .limit(limit)
+      .offset(offset)
+
+    const [{ total }] = await db
+      .select({ total: sql<number>`COUNT(*)::int` })
+      .from(feedbacks)
+      .where(whereConditions.length > 0 ? and(...whereConditions) : undefined)
+
+    return {
+      items: allFeedbacks,
+      total,
+      limit,
+      offset,
+    }
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.String()),
+      offset: t.Optional(t.String()),
+      status: t.Optional(t.String()),
+    }),
+  })
+  .get('/feedbacks/:id', async ({ params, set }) => {
+    const [feedback] = await db
+      .select({
+        id: feedbacks.id,
+        title: feedbacks.title,
+        content: feedbacks.content,
+        status: feedbacks.status,
+        createdAt: feedbacks.createdAt,
+        updatedAt: feedbacks.updatedAt,
+        closedAt: feedbacks.closedAt,
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+      })
+      .from(feedbacks)
+      .innerJoin(user, eq(feedbacks.userId, user.id))
+      .where(eq(feedbacks.id, params.id))
+      .limit(1)
+
+    if (!feedback) {
+      set.status = 404
+      return { error: 'Feedback not found' }
+    }
+
+    const replies = await db
+      .select({
+        id: feedbackReplies.id,
+        content: feedbackReplies.content,
+        isAdmin: feedbackReplies.isAdmin,
+        createdAt: feedbackReplies.createdAt,
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+      })
+      .from(feedbackReplies)
+      .innerJoin(user, eq(feedbackReplies.userId, user.id))
+      .where(eq(feedbackReplies.feedbackId, params.id))
+      .orderBy(feedbackReplies.createdAt)
+
+    return {
+      feedback,
+      replies,
+    }
+  }, {
+    params: t.Object({
+      id: t.String(),
+    }),
+  })
+  .post('/feedbacks/:id/reply', async ({ params, body, request, set }) => {
+    const { content } = body
+
+    // Check if feedback exists
+    const [feedback] = await db
+      .select()
+      .from(feedbacks)
+      .where(eq(feedbacks.id, params.id))
+      .limit(1)
+
+    if (!feedback) {
+      set.status = 404
+      return { error: 'Feedback not found' }
+    }
+
+    // Get admin user from session
+    // Note: betterAuthMiddleware and requireRole('admin') already verified the session and role
+    // The middleware would have returned 401/403 if session/role was invalid
+    // So if we get here, the user is definitely an admin
+    const session = await auth.api.getSession({ headers: request.headers })
+    if (!session) {
+      console.error('[Admin Feedback Reply] No session found - this should not happen as middleware checks this')
+      set.status = 401
+      return { error: 'Unauthorized' }
+    }
+
+    // Log for debugging
+    console.log('[Admin Feedback Reply] Session user:', {
+      id: session.user.id,
+      role: session.user.role,
+      email: session.user.email,
+    })
+
+    // Double-check role (should be admin due to middleware, but log if not)
+    if (session.user.role !== 'admin') {
+      console.error('[Admin Feedback Reply] User role is not admin:', session.user.role, 'This should not happen!')
+      // Don't return error here - middleware should have caught this
+      // But log it for debugging
+    }
+
+    // Add admin reply
+    const [reply] = await db
+      .insert(feedbackReplies)
+      .values({
+        feedbackId: params.id,
+        userId: session.user.id,
+        content,
+        isAdmin: true,
+      })
+      .returning()
+
+    // Update feedback status
+    let newStatus = feedback.status
+    if (feedback.status === 'submitted' || feedback.status === 'under_review') {
+      newStatus = 'responded'
+    } else if (feedback.status === 'awaiting_response') {
+      newStatus = 'responded'
+    }
+
+    await db
+      .update(feedbacks)
+      .set({
+        status: newStatus,
+        updatedAt: new Date(),
+      })
+      .where(eq(feedbacks.id, params.id))
+
+    return { reply }
+  }, {
+    params: t.Object({
+      id: t.String(),
+    }),
+    body: t.Object({
+      content: t.String({ minLength: 1, maxLength: 5000 }),
+    }),
+  })
+  .patch('/feedbacks/:id/status', async ({ params, body, set }) => {
+    const { status } = body
+
+    const validStatuses = ['submitted', 'under_review', 'awaiting_response', 'responded', 'closed']
+    if (!validStatuses.includes(status)) {
+      set.status = 400
+      return { error: 'Invalid status' }
+    }
+
+    const [feedback] = await db
+      .select()
+      .from(feedbacks)
+      .where(eq(feedbacks.id, params.id))
+      .limit(1)
+
+    if (!feedback) {
+      set.status = 404
+      return { error: 'Feedback not found' }
+    }
+
+    const updateData: any = {
+      status,
+      updatedAt: new Date(),
+    }
+
+    if (status === 'closed' && !feedback.closedAt) {
+      updateData.closedAt = new Date()
+    }
+
+    await db
+      .update(feedbacks)
+      .set(updateData)
+      .where(eq(feedbacks.id, params.id))
+
+    return { success: true }
+  }, {
+    params: t.Object({
+      id: t.String(),
+    }),
+    body: t.Object({
+      status: t.String(),
+    }),
+  })
+  .get('/feedbacks/unread-count', async () => {
+    // Count feedbacks that need attention: submitted, under_review, awaiting_response
+    const [{ count }] = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(feedbacks)
+      .where(
+        sql`${feedbacks.status} IN ('submitted', 'under_review', 'awaiting_response')`
+      )
+
+    return { count }
   })

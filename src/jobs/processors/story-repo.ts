@@ -18,6 +18,7 @@ export type StoryRow = {
   length: string
   lesson: string | null
   creditCost: number
+  isInteractive: boolean
 }
 
 export type ChildRow = {
@@ -42,6 +43,18 @@ export type StoryRepo = {
       title: string
       summary: string
       text: string
+      setting: string
+      conflict: string
+      tone: string
+      model?: string
+    },
+  ): Promise<void>
+  saveInteractiveStoryContent(
+    id: string,
+    payload: {
+      title: string
+      summary: string
+      storyData: unknown // StoryTree JSON
       setting: string
       conflict: string
       tone: string
@@ -82,6 +95,7 @@ export function createStoryRepo(
           length: stories.length,
           lesson: stories.lesson,
           creditCost: stories.creditCost,
+          isInteractive: stories.isInteractive,
         })
         .from(stories)
         .where(eq(stories.id, id))
@@ -125,6 +139,20 @@ export function createStoryRepo(
           title: payload.title,
           summary: payload.summary,
           text: payload.text,
+          setting: payload.setting,
+          conflict: payload.conflict,
+          tone: payload.tone,
+          model: payload.model ?? null,
+        })
+        .where(eq(stories.id, id))
+    },
+    async saveInteractiveStoryContent(id, payload) {
+      await db
+        .update(stories)
+        .set({
+          title: payload.title,
+          summary: payload.summary,
+          storyData: payload.storyData as unknown,
           setting: payload.setting,
           conflict: payload.conflict,
           tone: payload.tone,
