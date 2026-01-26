@@ -706,3 +706,17 @@ export const preRegistrations = pgTable("pre_registrations", {
     .$onUpdate(() => new Date())
     .notNull(),
 });
+
+// Launch notification subscriptions
+export const launchSubscriptions = pgTable("launch_subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  email: text("email").notNull().unique(),
+  invitationId: uuid("invitation_id").references(() => invitations.id, { onDelete: "set null" }),
+  lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+  sendCount: integer("send_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});

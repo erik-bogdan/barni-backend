@@ -176,6 +176,20 @@
       "when": 1769118119993,
       "tag": "0024_dizzy_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1769416579094,
+      "tag": "0025_bright_dagger",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1769420317847,
+      "tag": "0026_stiff_colleen_wing",
+      "breakpoints": true
     }
   ]
 }

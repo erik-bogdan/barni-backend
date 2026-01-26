@@ -11,6 +11,7 @@ import { paymentsApi, stripeWebhook, barionWebhook } from "./routes/payments"
 import { dash } from "./routes/dash"
 import { feedbackApi } from "./routes/feedback"
 import { invitationsApi, invitationsAdminApi, preRegistrationApi, preRegistrationAdminApi } from "./routes/invitations"
+import { launchSubscriptionsApi, launchSubscriptionsAdminApi } from "./routes/launch-subscriptions"
 
 const app = new Elysia()
   .use(cors({
@@ -45,6 +46,8 @@ const app = new Elysia()
   .use(invitationsAdminApi)
   .use(preRegistrationApi)
   .use(preRegistrationAdminApi)
+  .use(launchSubscriptionsApi)
+  .use(launchSubscriptionsAdminApi)
   .use(dash)
   .use(health)
   app.all("/api/auth/*", async ({ request }) => {
