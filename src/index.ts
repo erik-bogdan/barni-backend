@@ -15,7 +15,7 @@ import { invitationsApi, invitationsAdminApi, preRegistrationApi, preRegistratio
 const app = new Elysia()
   .use(cors({
    // origin: ["http://localhost:3001", "http://localhost:3000"],
-    origin: ["http://localhost:3001", "http://localhost:3000", "exp://127.0.0.1:8081","exp://","solvo://*", "solvo-dev://", "solvo-dev://*", "solvo-staging://", "solvo-staging://*","solvo://", "https://staging.solvobudget.hu", "https://solvobudget.hu"],
+    origin: ["http://localhost:3001", "http://localhost:3000", "exp://127.0.0.1:8081", "https://beta.barnimesei.hu", "https://barnimesei.hu"],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,

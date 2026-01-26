@@ -14,6 +14,8 @@ export const auth = betterAuth({
         'http://localhost:3000',
         'http://localhost:4444',
         'http://localhost:3001',
+        'https://beta.barnimesei.hu',
+        'https://barnimesei.hu',
     ],
     advanced: {
         // state cookie problémákra (SameSite + https ngrok alatt)
