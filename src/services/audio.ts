@@ -175,7 +175,7 @@ export async function requestStoryAudio(
     audioCost = await calcAudioCost(story.length as "short" | "medium" | "long", database)
     const creditBalance = await getUserCreditBalance(database, params.userId)
     if (creditBalance < audioCost) {
-      return { status: 402, data: { error: "Insufficient credits" } }
+      return { status: 402, data: { error: "Nincs elég mesetallér!" } }
     }
   }
 
@@ -204,7 +204,7 @@ export async function requestStoryAudio(
       // Use credits (old pricing)
       const txBalance = await getUserCreditBalance(tx, params.userId)
       if (txBalance < audioCost) {
-        throw new Error("Insufficient credits")
+        throw new Error("Nincs elég mesetallér!")
       }
 
       await tx.insert(storyCreditTransactions).values({

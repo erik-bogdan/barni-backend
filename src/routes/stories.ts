@@ -60,7 +60,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
       const result = await db.transaction(async (tx) => {
         const balance = await getUserCreditBalance(tx, userId)
         if (balance < creditCost) {
-          return { error: "Insufficient credits", storyId: null as string | null }
+          return { error: "Nincs elég mesetallér!", storyId: null as string | null }
         }
 
         const [created] = await tx
@@ -96,7 +96,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
 
       if (result.error || !result.storyId) {
         set.status = 402
-        return { error: "Insufficient credits" }
+        return { error: "Nincs elég mesetallér!" }
       }
 
       try {
