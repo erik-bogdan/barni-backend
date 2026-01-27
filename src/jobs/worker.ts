@@ -11,7 +11,7 @@ import { uploadBuffer, buildPublicUrl } from "../services/s3"
 const repo = createStoryRepo(db)
 
 const rabbitUrl = process.env.RABBITMQ_URL || "amqp://localhost:5672"
-const heartbeatUrl = process.env.UPTIME_KUMA_PUSH_URL
+const heartbeatUrl = process.env.UPTIME_KUMA_PUSH_URL_STORY_WORKER
 
 async function startHeartbeat(url?: string) {
   if (!url) return
@@ -30,7 +30,7 @@ async function startWorker() {
   const channel = await conn.createChannel()
 
   startHeartbeat(heartbeatUrl)
-  
+
   await channel.assertQueue(QUEUE_NAME, { durable: true })
   await channel.prefetch(2)
 
