@@ -101,9 +101,9 @@ async function hasAudioRefund(
   return Boolean(existing)
 }
 
-async function refundAudioFailure(
+export async function refundAudioFailureOnce(
   database: PostgresJsDatabase<Record<string, unknown>>,
-  params: { userId: string; storyId: string; length: string },
+  params: { userId: string; storyId: string; length?: string },
 ): Promise<void> {
   const [audioStarReserve] = await database
     .select()
@@ -113,6 +113,8 @@ async function refundAudioFailure(
         eq(audioStarTransactions.userId, params.userId),
         eq(audioStarTransactions.storyId, params.storyId),
         eq(audioStarTransactions.type, "reserve"),
+        eq(audioStarTransactions.reason, "audio_reserve"),
+        eq(audioStarTransactions.source, "audio_create"),
       ),
     )
     .limit(1)
@@ -140,10 +142,34 @@ async function refundAudioFailure(
     return
   }
 
-  const refundAmount = await calcAudioCost(
-    params.length as "short" | "medium" | "long",
-    database,
-  )
+  const [creditReserve] = await database
+    .select({ amount: storyCreditTransactions.amount })
+    .from(storyCreditTransactions)
+    .where(
+      and(
+        eq(storyCreditTransactions.userId, params.userId),
+        eq(storyCreditTransactions.storyId, params.storyId),
+        eq(storyCreditTransactions.type, "reserve"),
+        eq(storyCreditTransactions.reason, "audio_reserve"),
+        eq(storyCreditTransactions.source, "audio_create"),
+      ),
+    )
+    .limit(1)
+
+  const refundAmount =
+    creditReserve?.amount != null
+      ? Math.abs(creditReserve.amount)
+      : params.length
+        ? await calcAudioCost(
+            params.length as "short" | "medium" | "long",
+            database,
+          )
+        : 0
+
+  if (refundAmount <= 0) {
+    return
+  }
+
   await database.insert(storyCreditTransactions).values({
     userId: params.userId,
     storyId: params.storyId,
@@ -353,7 +379,7 @@ export async function processStoryAudioJob(
   }
 
   if (!story.text) {
-    await refundAudioFailure(database, {
+    await refundAudioFailureOnce(database, {
       userId: params.userId,
       storyId: story.id,
       length: story.length,
@@ -451,7 +477,7 @@ export async function processStoryAudioJob(
       // The reserve transaction itself is the charge
     }
   } catch (error) {
-    await refundAudioFailure(database, {
+    await refundAudioFailureOnce(database, {
       userId: params.userId,
       storyId: story.id,
       length: story.length,

@@ -1,7 +1,13 @@
 import amqp from "amqplib"
 
 import { db } from "../lib/db"
-import { createAudioRepo, processStoryAudioJob, createFreeStoryAudioRepo, processFreeStoryAudioJob } from "../services/audio"
+import {
+  createAudioRepo,
+  processStoryAudioJob,
+  createFreeStoryAudioRepo,
+  processFreeStoryAudioJob,
+  refundAudioFailureOnce,
+} from "../services/audio"
 import { buildPublicUrl, uploadBuffer } from "../services/s3"
 import { AUDIO_QUEUE } from "./audio-queue"
 import { createCoverRepo, processCoverJob, createFreeStoryCoverRepo, processFreeStoryCoverJob } from "../services/cover/coverService"
@@ -147,6 +153,18 @@ async function startAudioWorker() {
         channel.ack(msg)
         console.warn(`[audio-worker] retrying (${nextAttempts})`, error?.message)
         return
+      }
+      if (payload?.storyId && payload.userId && payload.userId !== "" && payload.jobType !== "cover.generate") {
+        try {
+          const story = await audioRepo.getStoryById(payload.storyId)
+          await refundAudioFailureOnce(db, {
+            userId: payload.userId,
+            storyId: payload.storyId,
+            length: story?.length,
+          })
+        } catch (refundErr) {
+          console.error("[audio-worker] failed to refund on final failure", refundErr)
+        }
       }
       console.error("[audio-worker] failed", error)
       channel.ack(msg)
