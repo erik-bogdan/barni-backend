@@ -477,6 +477,11 @@ export async function processStoryAudioJob(
       // The reserve transaction itself is the charge
     }
   } catch (error) {
+    const maybeError = error as { statusCode?: number; body?: { detail?: { status?: string } } }
+    const isQuotaExceeded =
+      maybeError?.statusCode === 401 &&
+      maybeError?.body?.detail?.status === "quota_exceeded"
+
     await refundAudioFailureOnce(database, {
       userId: params.userId,
       storyId: story.id,
@@ -487,6 +492,10 @@ export async function processStoryAudioJob(
       audioError: error instanceof Error ? error.message : "Unknown error",
       audioUpdatedAt: now(),
     })
+    if (isQuotaExceeded) {
+      // Non-retriable: quota exceeded, refund already issued
+      return
+    }
     throw error
   }
 }
