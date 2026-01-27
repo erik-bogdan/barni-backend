@@ -7,6 +7,7 @@ import { AUDIO_QUEUE } from "./audio-queue"
 import { createCoverRepo, processCoverJob, createFreeStoryCoverRepo, processFreeStoryCoverJob } from "../services/cover/coverService"
 
 const rabbitUrl = process.env.RABBITMQ_URL || "amqp://localhost:5672"
+const heartbeatUrl = process.env.UPTIME_KUMA_PUSH_URL_AUDIO_WORKER
 
 const audioRepo = createAudioRepo(db)
 const freeStoryAudioRepo = createFreeStoryAudioRepo(db)
@@ -19,9 +20,24 @@ type AudioJobPayload = {
   force?: boolean
 }
 
+async function startHeartbeat(url?: string) {
+  if (!url) return
+
+  setInterval(async () => {
+    try {
+      await fetch(url)
+    } catch {
+      // direkt lenyeljük – ha nem megy ki, Kuma úgyis DOWN lesz
+    }
+  }, 60_000) // 60s
+}
+
 async function startAudioWorker() {
   const conn = await amqp.connect(rabbitUrl)
   const channel = await conn.createChannel()
+
+  startHeartbeat(heartbeatUrl)
+  
   await channel.assertQueue(AUDIO_QUEUE, { durable: true })
   await channel.prefetch(2)
 
