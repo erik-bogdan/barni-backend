@@ -743,6 +743,14 @@ async function handleStripeChargeRefunded(event: any): Promise<void> {
   // - Add negative credit ledger entry
 }
 
+const BARION_SUCCESS_STATUSES = new Set(["succeeded", "partiallysucceeded"]);
+const BARION_CANCELLED_STATUSES = new Set(["canceled", "cancelled"]);
+const BARION_FAILED_STATUSES = new Set(["failed", "expired"]);
+
+function normalizeBarionStatus(status?: string): string {
+  return (status || "").trim().toLowerCase();
+}
+
 // Barion webhook endpoint
 // Route: GET/POST /barion/webhook
 // Barion can send callbacks as either GET (with paymentId query param) or POST (with JSON body)
@@ -959,10 +967,19 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
  */
 async function processBarionWebhookEvent(event: any): Promise<void> {
   try {
+    const status = normalizeBarionStatus(event.data?.Status);
+
     // Barion sends payment state updates
-    // Check if payment is completed
-    if (event.type === "payment.completed" || event.data.Status === "Succeeded") {
+    if (BARION_SUCCESS_STATUSES.has(status)) {
       await handleBarionPaymentCompleted(event);
+    } else if (BARION_CANCELLED_STATUSES.has(status) || BARION_FAILED_STATUSES.has(status)) {
+      await handleBarionPaymentFailed(event, status);
+    } else {
+      // Prepared/Started/other transitional states: no-op
+      console.log("[Barion Webhook] Payment state received (no action):", {
+        paymentId: event.id,
+        status: event.data?.Status,
+      });
     }
 
     // Mark as processed
@@ -980,6 +997,61 @@ async function processBarionWebhookEvent(event: any): Promise<void> {
       .where(eq(barionEvents.barionEventId, event.id));
     throw err;
   }
+}
+
+/**
+ * Handle Barion payment failed/canceled/expired event
+ */
+async function handleBarionPaymentFailed(event: any, status: string): Promise<void> {
+  const paymentData = event.data;
+  const paymentId = paymentData.PaymentId;
+  const paymentRequestId = paymentData.PaymentRequestId || paymentData.OrderNumber;
+
+  if (!paymentRequestId) {
+    throw new Error("Missing PaymentRequestId or OrderNumber in Barion webhook");
+  }
+
+  const orderId = paymentRequestId;
+  const result = await getOrderById(db, orderId);
+  if (!result) {
+    throw new Error(`Order ${orderId} not found`);
+  }
+
+  const { order } = result;
+
+  // If already paid/refunded, do not override
+  if (order.status === "paid" || order.status === "refunded") {
+    console.log(`[Barion Webhook] Order ${orderId} already ${order.status}, skipping failure update`);
+    return;
+  }
+
+  const nextStatus =
+    BARION_CANCELLED_STATUSES.has(status) ? "canceled" : "failed";
+
+  await updateOrderPayment(db, orderId, {
+    status: nextStatus,
+    barionPaymentId: paymentId,
+    barionPaymentRequestId: paymentRequestId,
+  });
+
+  const failure = paymentData.Errors?.[0];
+  await createPayment(db, orderId, {
+    status: "failed",
+    amountCents: order.totalCents,
+    currency: order.currency,
+    provider: "barion",
+    barionPaymentId: paymentId,
+    barionTransactionId: paymentData.Transactions?.[0]?.POSTransactionId,
+    failureCode: status,
+    failureMessage: failure?.Description || failure?.Title || "Barion payment failed",
+  });
+
+  console.log("[Barion Webhook] Payment marked as failed:", {
+    orderId,
+    paymentId,
+    status,
+    orderStatus: nextStatus,
+  });
 }
 
 /**
