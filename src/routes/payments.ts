@@ -393,6 +393,8 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         couponValueSnapshot: order.couponValueSnapshot,
         stripeCheckoutSessionId: order.stripeCheckoutSessionId,
         stripePaymentIntentId: order.stripePaymentIntentId,
+        barionPaymentId: order.barionPaymentId,
+        barionPaymentRequestId: order.barionPaymentRequestId,
         billingoInvoiceId: order.billingoInvoiceId,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt,
