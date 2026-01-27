@@ -64,6 +64,96 @@ export function computeAudioHash(params: {
   return hash.digest("hex")
 }
 
+async function hasAudioRefund(
+  database: PostgresJsDatabase<Record<string, unknown>>,
+  params: { userId: string; storyId: string; useAudioStar: boolean },
+): Promise<boolean> {
+  if (params.useAudioStar) {
+    const [existing] = await database
+      .select({ id: audioStarTransactions.id })
+      .from(audioStarTransactions)
+      .where(
+        and(
+          eq(audioStarTransactions.userId, params.userId),
+          eq(audioStarTransactions.storyId, params.storyId),
+          eq(audioStarTransactions.type, "refund"),
+          eq(audioStarTransactions.reason, "audio_failed"),
+          eq(audioStarTransactions.source, "audio_worker"),
+        ),
+      )
+      .limit(1)
+    return Boolean(existing)
+  }
+
+  const [existing] = await database
+    .select({ id: storyCreditTransactions.id })
+    .from(storyCreditTransactions)
+    .where(
+      and(
+        eq(storyCreditTransactions.userId, params.userId),
+        eq(storyCreditTransactions.storyId, params.storyId),
+        eq(storyCreditTransactions.type, "refund"),
+        eq(storyCreditTransactions.reason, "audio_failed"),
+        eq(storyCreditTransactions.source, "audio_worker"),
+      ),
+    )
+    .limit(1)
+  return Boolean(existing)
+}
+
+async function refundAudioFailure(
+  database: PostgresJsDatabase<Record<string, unknown>>,
+  params: { userId: string; storyId: string; length: string },
+): Promise<void> {
+  const [audioStarReserve] = await database
+    .select()
+    .from(audioStarTransactions)
+    .where(
+      and(
+        eq(audioStarTransactions.userId, params.userId),
+        eq(audioStarTransactions.storyId, params.storyId),
+        eq(audioStarTransactions.type, "reserve"),
+      ),
+    )
+    .limit(1)
+
+  const useAudioStar = Boolean(audioStarReserve)
+  const alreadyRefunded = await hasAudioRefund(database, {
+    userId: params.userId,
+    storyId: params.storyId,
+    useAudioStar,
+  })
+
+  if (alreadyRefunded) {
+    return
+  }
+
+  if (useAudioStar) {
+    await database.insert(audioStarTransactions).values({
+      userId: params.userId,
+      storyId: params.storyId,
+      type: "refund",
+      amount: 1, // 1 hang = 1 csillag
+      reason: "audio_failed",
+      source: "audio_worker",
+    })
+    return
+  }
+
+  const refundAmount = await calcAudioCost(
+    params.length as "short" | "medium" | "long",
+    database,
+  )
+  await database.insert(storyCreditTransactions).values({
+    userId: params.userId,
+    storyId: params.storyId,
+    type: "refund",
+    amount: refundAmount,
+    reason: "audio_failed",
+    source: "audio_worker",
+  })
+}
+
 export function createAudioRepo(
   database: PostgresJsDatabase<Record<string, unknown>>,
 ): AudioRepo {
@@ -263,41 +353,11 @@ export async function processStoryAudioJob(
   }
 
   if (!story.text) {
-    // Check if audio star was used (reserve transaction exists)
-    const [audioStarReserve] = await database
-      .select()
-      .from(audioStarTransactions)
-      .where(
-        and(
-          eq(audioStarTransactions.userId, params.userId),
-          eq(audioStarTransactions.storyId, story.id),
-          eq(audioStarTransactions.type, "reserve")
-        )
-      )
-      .limit(1)
-
-    if (audioStarReserve) {
-      // Refund audio star
-      await database.insert(audioStarTransactions).values({
-        userId: params.userId,
-        storyId: story.id,
-        type: "refund",
-        amount: 1, // 1 hang = 1 csillag
-        reason: "audio_failed",
-        source: "audio_worker",
-      })
-    } else {
-      // Refund credits on failure
-      const audioCost = await calcAudioCost(story.length as "short" | "medium" | "long", database)
-      await database.insert(storyCreditTransactions).values({
-        userId: params.userId,
-        storyId: story.id,
-        type: "refund",
-        amount: audioCost,
-        reason: "audio_failed",
-        source: "audio_worker",
-      })
-    }
+    await refundAudioFailure(database, {
+      userId: params.userId,
+      storyId: story.id,
+      length: story.length,
+    })
     await repo.updateAudio(story.id, {
       audioStatus: "failed",
       audioError: "Story text missing",
@@ -391,41 +451,11 @@ export async function processStoryAudioJob(
       // The reserve transaction itself is the charge
     }
   } catch (error) {
-    // Check if audio star was used (reserve transaction exists)
-    const [audioStarReserve] = await database
-      .select()
-      .from(audioStarTransactions)
-      .where(
-        and(
-          eq(audioStarTransactions.userId, params.userId),
-          eq(audioStarTransactions.storyId, story.id),
-          eq(audioStarTransactions.type, "reserve")
-        )
-      )
-      .limit(1)
-
-    if (audioStarReserve) {
-      // Refund audio star
-      await database.insert(audioStarTransactions).values({
-        userId: params.userId,
-        storyId: story.id,
-        type: "refund",
-        amount: 1, // 1 hang = 1 csillag
-        reason: "audio_failed",
-        source: "audio_worker",
-      })
-    } else {
-      // Refund credits on failure
-      const refundAmount = await calcAudioCost(story.length as "short" | "medium" | "long", database)
-      await database.insert(storyCreditTransactions).values({
-        userId: params.userId,
-        storyId: story.id,
-        type: "refund",
-        amount: refundAmount,
-        reason: "audio_failed",
-        source: "audio_worker",
-      })
-    }
+    await refundAudioFailure(database, {
+      userId: params.userId,
+      storyId: story.id,
+      length: story.length,
+    })
     await repo.updateAudio(story.id, {
       audioStatus: "failed",
       audioError: error instanceof Error ? error.message : "Unknown error",
