@@ -1,6 +1,6 @@
 import { eq, and, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { orders, orderItems, payments, storyCreditTransactions, audioStarTransactions, pricingPlans } from "../../packages/db/src/schema";
+import { orders, orderItems, payments, storyCreditTransactions, audioStarTransactions, pricingPlans, notifications } from "../../packages/db/src/schema";
 import type { PricingPlan } from "./pricing";
 import type { Coupon } from "./coupons";
 import { getCurrentProviderType } from "../lib/payment-providers/factory";
@@ -255,6 +255,26 @@ export async function fulfillOrder(
       source: "stripe",
     });
   }
+
+  const totalCreditsGranted = order.creditsTotal + bonusCredits;
+  const totalAudioStarsGranted = bonusAudioStars;
+  const parts: string[] = [];
+  if (totalCreditsGranted > 0) {
+    parts.push(`${totalCreditsGranted.toLocaleString("hu-HU")} mesetallér`);
+  }
+  if (totalAudioStarsGranted > 0) {
+    parts.push(`${totalAudioStarsGranted.toLocaleString("hu-HU")} hangcsillag`);
+  }
+  const summary = parts.length > 0 ? parts.join(" és ") : "a feltöltött tokenek";
+
+  await db.insert(notifications).values({
+    userId: order.userId,
+    type: "credits_added",
+    icon: "gift",
+    title: "Sikeres feltöltés",
+    message: `Sikeresen jóváírtunk ${summary}!`,
+    link: null,
+  });
 
   return true;
 }

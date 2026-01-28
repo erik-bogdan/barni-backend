@@ -231,7 +231,7 @@ async function notifyAudioFailure(
   const title = story.title?.trim() || "mese"
   const message =
     `A(z) "${title}" meséhez tartozó audió generálása sajnos technikai okok miatt ` +
-    `sikertelen volt! Jóváírtuk automatikusan a felhasznált tokeneket!`
+    `sikertelen volt! Jóváírtuk automatikusan a felhasznált tallérokat / csillagokat!`
 
   await database.insert(notifications).values({
     userId: story.userId,

@@ -108,3 +108,24 @@ export const notificationsApi = new Elysia({
 
     return { success: true }
   })
+  .delete(
+    "/:id",
+    async ({ request, params, set }) => {
+      const session = await requireSession(request.headers, set)
+      if (!session) return { error: "Unauthorized" }
+
+      await db
+        .delete(notifications)
+        .where(
+          sql`${notifications.id} = ${params.id} AND ${notifications.userId} = ${session.user.id}`,
+        )
+        .returning({ id: notifications.id })
+
+      return { success: true }
+    },
+    {
+      params: t.Object({
+        id: t.String(),
+      }),
+    },
+  )

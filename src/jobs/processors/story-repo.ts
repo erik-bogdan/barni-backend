@@ -6,6 +6,7 @@ import {
   stories,
   storyCreditTransactions,
   storyTransactions,
+  notifications,
 } from "../../../packages/db/src/schema"
 
 export type StoryRow = {
@@ -77,6 +78,12 @@ export type StoryRepo = {
     },
   ): Promise<void>
   refundCredits(userId: string, storyId: string, amount: number): Promise<void>
+  notifyStoryReady(
+    userId: string,
+    childId: string,
+    storyId: string,
+    title?: string | null,
+  ): Promise<void>
 }
 
 export function createStoryRepo(
@@ -192,6 +199,21 @@ export function createStoryRepo(
         amount,
         reason: "story_failed",
         source: "worker",
+      })
+    },
+    async notifyStoryReady(userId, childId, storyId, title) {
+      const safeTitle = title?.trim()
+      const message = safeTitle
+        ? `A(z) "${safeTitle}" meséd elkészült! Jó szórakozást kívánunk!`
+        : "Az új meséd elkészült! Jó szórakozást kívánunk!"
+
+      await db.insert(notifications).values({
+        userId,
+        type: "story_ready",
+        icon: "success",
+        title: "Új mese elkészült",
+        message,
+        link: `/dashboard/${childId}/stories/${storyId}`,
       })
     },
   }

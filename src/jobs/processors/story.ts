@@ -66,6 +66,12 @@ export type StoryProcessorDeps = {
       },
     ): Promise<void>
     refundCredits(userId: string, storyId: string, amount: number): Promise<void>
+    notifyStoryReady(
+      userId: string,
+      childId: string,
+      storyId: string,
+      title?: string | null,
+    ): Promise<void>
   }
   openai: {
     generateStoryText(prompt: string): Promise<StoryGenerationResult>
@@ -90,6 +96,7 @@ export async function processStoryJob(
 
   const story = await deps.repo.getStory(storyId)
   if (!story) return
+  let readyTitle: string | null = null
 
   try {
     await deps.repo.updateStatus(storyId, "generating_text")
@@ -153,6 +160,7 @@ export async function processStoryJob(
 
       const primaryModel = treeResult.model
 
+      readyTitle = metaResult.meta.title
       await deps.repo.saveInteractiveStoryContent(storyId, {
         title: metaResult.meta.title,
         summary: metaResult.meta.summary,
@@ -212,6 +220,7 @@ export async function processStoryJob(
       // Use the model from story generation as the primary model
       const primaryModel = storyResult.model
 
+      readyTitle = metaResult.meta.title
       await deps.repo.saveStoryContent(storyId, {
         title: metaResult.meta.title,
         summary: metaResult.meta.summary,
@@ -239,6 +248,14 @@ export async function processStoryJob(
 
     // Mark story as ready
     await deps.repo.savePreview(storyId, { previewUrl: null, readyAt: now() })
+    try {
+      await deps.repo.notifyStoryReady(story.userId, story.childId, storyId, readyTitle)
+    } catch (notifyErr) {
+      getLogger().error(
+        { err: notifyErr, storyId, userId: story.userId },
+        "story_worker.notification_failed",
+      )
+    }
   } catch (error) {
     const mappedMessage = mapGenerationError(error)
     await deps.repo.updateStatus(storyId, "failed", mappedMessage)
