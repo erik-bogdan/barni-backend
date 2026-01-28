@@ -1,5 +1,6 @@
 import { buildStoryPrompt, buildInteractiveStoryPrompt } from "../../services/storyPrompt"
 import type { StoryMeta, StoryGenerationResult, StoryMetaResult, StoryTreeGenerationResult } from "../../services/openai"
+import { getLogger } from "../../lib/logger"
 
 type AvoidPair = {
   setting: string
@@ -233,7 +234,7 @@ export async function processStoryJob(
       )
     } catch (coverErr) {
       // Don't fail story generation if cover generation fails
-      console.error(`[story-worker] cover generation failed for ${storyId}:`, coverErr)
+      getLogger().error({ err: coverErr, storyId }, "story_worker.cover_failed")
     }
 
     // Mark story as ready
@@ -241,6 +242,10 @@ export async function processStoryJob(
   } catch (error) {
     const mappedMessage = mapGenerationError(error)
     await deps.repo.updateStatus(storyId, "failed", mappedMessage)
+    getLogger().error(
+      { storyId, userId: story.userId, reason: mappedMessage },
+      "story_worker.refund_credits",
+    )
     await deps.repo.refundCredits(story.userId, storyId, story.creditCost)
     throw error
   }

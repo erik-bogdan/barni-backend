@@ -20,7 +20,7 @@ export const launchSubscriptionsApi = new Elysia({
 })
   .post(
     "/",
-    async ({ body, set }) => {
+    async ({ body, set, logger }) => {
       const email = body.email.trim().toLowerCase()
 
       const existing = await db
@@ -48,7 +48,7 @@ export const launchSubscriptionsApi = new Elysia({
           return { error: "Ez az email cím már fel van iratkozva" }
         }
 
-        console.error("Launch subscription insert failed:", error)
+        logger.error({ err: error, email }, "launch_subscription.insert_failed")
         set.status = 500
         return { error: "Hiba történt a feliratkozás során" }
       }
@@ -185,7 +185,7 @@ export const launchSubscriptionsAdminApi = new Elysia({
   })
   .post(
     "/:id/send",
-    async ({ params, request, set }) => {
+    async ({ params, request, set, logger }) => {
       const session = await auth.api.getSession({ headers: request.headers })
       if (!session) {
         set.status = 401
@@ -273,7 +273,7 @@ export const launchSubscriptionsAdminApi = new Elysia({
           emailHtml
         )
       } catch (error) {
-        console.error("Failed to send launch email:", error)
+        logger.error({ err: error, subscriptionId: params.id }, "launch_subscription.email_failed")
         set.status = 500
         return { error: "Nem sikerült elküldeni az emailt" }
       }

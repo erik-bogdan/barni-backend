@@ -7,6 +7,7 @@ import {
   invitationSettings,
   user,
 } from "../../packages/db/src/schema"
+import { getLogger } from "../lib/logger"
 
 export async function processInvitationOnRegistration(
   userId: string,
@@ -26,12 +27,12 @@ export async function processInvitationOnRegistration(
     .limit(1)
 
   if (!invitation) {
-    console.warn(`[Invitations] No pending invitation found for token: ${invitationToken}`)
+    getLogger().warn("invitations.pending_not_found")
     return
   }
 
   if (new Date(invitation.expiresAt) < new Date()) {
-    console.warn(`[Invitations] Invitation expired: ${invitation.id}`)
+    getLogger().warn({ invitationId: invitation.id }, "invitations.expired")
     return
   }
 
@@ -100,5 +101,5 @@ export async function processInvitationOnRegistration(
     })
   }
 
-  console.log(`[Invitations] Processed invitation ${invitation.id} for user ${userId}`)
+  getLogger().info({ invitationId: invitation.id, userId }, "invitations.processed")
 }

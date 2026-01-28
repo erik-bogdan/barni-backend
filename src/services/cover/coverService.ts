@@ -5,6 +5,7 @@ import { stories, freeStories } from "../../../packages/db/src/schema"
 import { db } from "../../lib/db"
 import { buildPublicUrl, uploadBuffer } from "../s3"
 import { generateCoverWebp, type Mood, type Theme, type Length } from "./generateCover"
+import { getLogger } from "../../lib/logger"
 
 export type CoverStoryRow = {
   id: string
@@ -116,6 +117,7 @@ export async function processFreeStoryCoverJob(
     db?: typeof db
   },
 ): Promise<void> {
+  const logger = getLogger()
   const repo = deps?.repo ?? createFreeStoryCoverRepo(db)
   const s3Client = deps?.s3 ?? { uploadBuffer, buildPublicUrl }
   const database = deps?.db ?? db
@@ -167,7 +169,7 @@ export async function processFreeStoryCoverJob(
     // Update story with cover URLs
     await repo.updateCover(story.id, { coverUrl, coverSquareUrl, coverStatus: "ready", coverError: null })
   } catch (error) {
-    console.error(`[cover-worker] Failed to generate cover for free story ${params.storyId}:`, error)
+    logger.error({ err: error, storyId: params.storyId }, "cover.generate_failed")
     await repo.updateCover(story.id, { 
       coverUrl: null, 
       coverSquareUrl: null, 
@@ -187,6 +189,7 @@ export async function processCoverJob(
     db?: typeof db
   },
 ): Promise<void> {
+  const logger = getLogger()
   const repo = deps?.repo ?? createCoverRepo(db)
   const s3Client = deps?.s3 ?? { uploadBuffer, buildPublicUrl }
   const database = deps?.db ?? db
@@ -244,7 +247,7 @@ export async function processCoverJob(
     await repo.updateCover(story.id, { coverUrl, coverSquareUrl })
   } catch (error) {
     // Log error but don't fail the whole story
-    console.error(`[cover-worker] Failed to generate cover for story ${params.storyId}:`, error)
+    logger.error({ err: error, storyId: params.storyId }, "cover.generate_failed")
     // Update DB with null coverUrl to indicate failure
     await repo.updateCover(story.id, { coverUrl: null, coverSquareUrl: null })
     // Don't throw - let the story continue without cover

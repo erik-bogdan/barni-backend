@@ -2,6 +2,10 @@ import { eq } from "drizzle-orm"
 
 import { db } from "../lib/db"
 import { pricingPlans } from "../../packages/db/src/schema"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("backend")
+setLogger(logger)
 
 type SeedPricingPlan = {
   code: string
@@ -46,7 +50,7 @@ const SEED: SeedPricingPlan[] = [
 ]
 
 export async function seedPricing() {
-  console.log("🌱 Seeding pricing plans...")
+  logger.info("pricing.seed_start")
 
   for (const plan of SEED) {
     // Check if plan already exists
@@ -57,7 +61,7 @@ export async function seedPricing() {
       .limit(1)
 
     if (existing.length > 0) {
-      console.log(`⏭️  Plan ${plan.code} already exists, skipping...`)
+      logger.info({ code: plan.code }, "pricing.plan_exists_skip")
       continue
     }
 
@@ -76,21 +80,30 @@ export async function seedPricing() {
     })
 
     // Note: For HUF, priceCents is stored directly in forints (2990 = 2990 Ft), not divided by 100
-    console.log(`✅ Created plan: ${plan.name} (${plan.code}) - ${plan.credits} credits for ${plan.priceCents} HUF`)
+    logger.info(
+      {
+        name: plan.name,
+        code: plan.code,
+        credits: plan.credits,
+        priceCents: plan.priceCents,
+        currency: "HUF",
+      },
+      "pricing.plan_created",
+    )
   }
 
-  console.log("✅ Pricing plans seed complete")
+  logger.info("pricing.seed_complete")
 }
 
 // Allow running directly: `bun src/scripts/seed-pricing.ts`
 if (import.meta.main) {
   seedPricing()
     .then(() => {
-      console.log("✅ Pricing seed complete")
+      logger.info("pricing.seed_done")
       process.exit(0)
     })
     .catch((err) => {
-      console.error("❌ Pricing seed failed", err)
+      logger.error({ err }, "pricing.seed_failed")
       process.exit(1)
     })
 }

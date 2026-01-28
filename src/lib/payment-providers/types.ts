@@ -5,6 +5,8 @@
  * to allow easy switching between providers.
  */
 
+import type { Logger } from "pino";
+
 export type PaymentProviderType = "stripe" | "barion";
 
 export interface CreateCheckoutSessionParams {
@@ -17,6 +19,7 @@ export interface CreateCheckoutSessionParams {
   creditsTotal: number;
   customerEmail?: string;
   customerId?: string;
+  logger?: Logger;
 }
 
 export interface CheckoutSession {
@@ -56,10 +59,15 @@ export interface PaymentProvider {
   /**
    * Ensure customer exists in the payment provider system
    */
-  ensureCustomer(userId: string, email: string): Promise<string>;
+  ensureCustomer(userId: string, email: string, logger?: Logger): Promise<string>;
 
   /**
    * Get minimum amount for the provider (in cents)
    */
   getMinimumAmount(currency: string): number;
+
+  /**
+   * Optional provider-specific payment state lookup
+   */
+  getPaymentState?(paymentId: string): Promise<any>;
 }

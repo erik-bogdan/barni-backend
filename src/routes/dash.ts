@@ -389,7 +389,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       })),
     }
   })
-  .get('/users/:id/stories', async ({ params }) => {
+  .get('/users/:id/stories', async ({ params, logger }) => {
     // Get all stories for user with child info
     const storyList = await db
       .select({
@@ -447,7 +447,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             const coverKey = buildCoverKey(story.id)
             coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
             // Fallback to original URL
           }
         }
@@ -457,7 +457,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             const coverSquareKey = buildCoverSquareKey(story.id)
             coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
             // Fallback to original URL
           }
         }
@@ -469,7 +469,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             const audioKey = buildAudioKey(story.id)
             audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for audio ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "audio.presign_failed")
             // Fallback to original URL
           }
         }
@@ -1326,7 +1326,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       },
     }
   })
-  .get('/orders/:id/invoice', async ({ params, set }) => {
+  .get('/orders/:id/invoice', async ({ params, set, logger }) => {
     const [order] = await db
       .select({
         id: orders.id,
@@ -1360,7 +1360,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       // Return URL instead of redirecting (for admin use)
       return { invoiceUrl }
     } catch (error: any) {
-      console.error('[Invoice] Failed to get invoice URL:', error)
+      logger.error({ err: error, orderId: params.id }, "invoice.fetch_failed")
       set.status = 500
       return { error: 'Failed to retrieve invoice' }
     }
@@ -1543,7 +1543,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     }),
   })
   // Free Stories endpoints
-  .get('/free-stories', async () => {
+  .get('/free-stories', async ({ logger }) => {
     const allFreeStories = await db
       .select()
       .from(freeStories)
@@ -1561,7 +1561,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             const coverKey = buildFreeStoryCoverKey(story.id)
             coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
             // Fallback to original URL
           }
         }
@@ -1572,7 +1572,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
             coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
             // Fallback to original URL
           }
         }
@@ -1587,7 +1587,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
 
     return { items }
   })
-  .get('/free-stories/:id', async ({ params }) => {
+  .get('/free-stories/:id', async ({ params, logger }) => {
     const [story] = await db
       .select()
       .from(freeStories)
@@ -1608,7 +1608,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         const coverKey = buildFreeStoryCoverKey(story.id)
         coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
         // Fallback to original URL
       }
     }
@@ -1619,7 +1619,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
         coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
         // Fallback to original URL
       }
     }
@@ -1631,7 +1631,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         const audioKey = buildFreeStoryAudioKey(story.id)
         audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for audio ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "audio.presign_failed")
         // Fallback to original URL
       }
     }
@@ -1993,7 +1993,7 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       id: t.String(),
     }),
   })
-  .post('/feedbacks/:id/reply', async ({ params, body, request, set }) => {
+  .post('/feedbacks/:id/reply', async ({ params, body, request, set, logger }) => {
     const { content } = body
 
     // Check if feedback exists
@@ -2014,21 +2014,21 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     // So if we get here, the user is definitely an admin
     const session = await auth.api.getSession({ headers: request.headers })
     if (!session) {
-      console.error('[Admin Feedback Reply] No session found - this should not happen as middleware checks this')
+      logger.error("admin_feedback_reply.session_missing")
       set.status = 401
       return { error: 'Unauthorized' }
     }
 
     // Log for debugging
-    console.log('[Admin Feedback Reply] Session user:', {
+    logger.info({
       id: session.user.id,
       role: session.user.role,
       email: session.user.email,
-    })
+    }, "admin_feedback_reply.session_user")
 
     // Double-check role (should be admin due to middleware, but log if not)
     if (session.user.role !== 'admin') {
-      console.error('[Admin Feedback Reply] User role is not admin:', session.user.role, 'This should not happen!')
+      logger.error({ role: session.user.role }, "admin_feedback_reply.role_mismatch")
       // Don't return error here - middleware should have caught this
       // But log it for debugging
     }

@@ -8,6 +8,7 @@ import { env } from "../../env";
 import { StripeProvider } from "./stripe-provider";
 import { BarionProvider } from "./barion-provider";
 import type { PaymentProvider, PaymentProviderType } from "./types";
+import { getLogger } from "../logger";
 
 let stripeProvider: StripeProvider | null = null;
 let barionProvider: BarionProvider | null = null;
@@ -33,8 +34,9 @@ export function getPaymentProvider(): PaymentProvider {
       return barionProvider;
 
     default:
-      console.warn(
-        `[Payment Provider] Unknown provider type: ${providerType}, defaulting to stripe`,
+      getLogger().warn(
+        { providerType },
+        "payment_provider.unknown_defaulting_stripe",
       );
       if (!stripeProvider) {
         stripeProvider = new StripeProvider();

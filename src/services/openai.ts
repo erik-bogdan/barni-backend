@@ -1,4 +1,5 @@
 import OpenAI from "openai"
+import { getLogger } from "../lib/logger"
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini"
 
@@ -25,18 +26,42 @@ export type StoryGenerationResult = {
 }
 
 export async function generateStoryText(prompt: string): Promise<StoryGenerationResult> {
+  const logger = getLogger()
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: "You generate bedtime stories." },
-      { role: "user", content: prompt },
-    ],
-  })
+  const operation = "story.generate_text"
+  const start = Date.now()
+  let response: Awaited<ReturnType<typeof client.chat.completions.create>>
+  try {
+    response = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You generate bedtime stories." },
+        { role: "user", content: prompt },
+      ],
+    })
+  } catch (error) {
+    const durationMs = Date.now() - start
+    logger.error({ err: error, operation, model, durationMs }, "openai.failed")
+    throw error
+  }
 
   const text = response.choices[0]?.message?.content?.trim() || ""
   const usage = response.usage
+  const durationMs = Date.now() - start
+  logger.info(
+    {
+      operation,
+      model,
+      durationMs,
+      usage: {
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens ?? 0,
+      },
+    },
+    "openai.completed",
+  )
 
   return {
     text,
@@ -76,18 +101,23 @@ export type StoryMetaResult = {
 }
 
 export async function extractStoryMeta(storyText: string): Promise<StoryMetaResult> {
+  const logger = getLogger()
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      {
-        role: "system",
-        content: "Extract structured metadata in Hungarian.",
-      },
-      {
-        role: "user",
-        content: `
+  const operation = "story.extract_meta"
+  const start = Date.now()
+  let response: Awaited<ReturnType<typeof client.chat.completions.create>>
+  try {
+    response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "Extract structured metadata in Hungarian.",
+        },
+        {
+          role: "user",
+          content: `
 Extract JSON with:
 title (max 6 words),
 summary (1 sentence),
@@ -98,13 +128,32 @@ tone (nyugodt|vidam|kalandos).
 Story:
 ${storyText}
         `.trim(),
-      },
-    ],
-    response_format: { type: "json_object" },
-  })
+        },
+      ],
+      response_format: { type: "json_object" },
+    })
+  } catch (error) {
+    const durationMs = Date.now() - start
+    logger.error({ err: error, operation, model, durationMs }, "openai.failed")
+    throw error
+  }
 
   const raw = response.choices[0]?.message?.content || "{}"
   const usage = response.usage
+  const durationMs = Date.now() - start
+  logger.info(
+    {
+      operation,
+      model,
+      durationMs,
+      usage: {
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens ?? 0,
+      },
+    },
+    "openai.completed",
+  )
   
   try {
     const parsed = JSON.parse(raw) as Partial<StoryMeta>
@@ -175,25 +224,49 @@ export type StoryTreeGenerationResult = {
 }
 
 export async function generateStoryTree(prompt: string): Promise<StoryTreeGenerationResult> {
+  const logger = getLogger()
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      {
-        role: "system",
-        content: "You generate interactive decision-tree bedtime stories in Hungarian. Return valid JSON matching the StoryTree schema.",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-    response_format: { type: "json_object" },
-  })
+  const operation = "story.generate_tree"
+  const start = Date.now()
+  let response: Awaited<ReturnType<typeof client.chat.completions.create>>
+  try {
+    response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You generate interactive decision-tree bedtime stories in Hungarian. Return valid JSON matching the StoryTree schema.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      response_format: { type: "json_object" },
+    })
+  } catch (error) {
+    const durationMs = Date.now() - start
+    logger.error({ err: error, operation, model, durationMs }, "openai.failed")
+    throw error
+  }
 
   const raw = response.choices[0]?.message?.content || "{}"
   const usage = response.usage
+  const durationMs = Date.now() - start
+  logger.info(
+    {
+      operation,
+      model,
+      durationMs,
+      usage: {
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens ?? 0,
+      },
+    },
+    "openai.completed",
+  )
 
   try {
     const parsed = JSON.parse(raw) as StoryTreeGenerationResult["storyTree"]

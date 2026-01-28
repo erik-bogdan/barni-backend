@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { resolve } from "node:path"
 import sharp from "sharp"
 import { pickPose, pickBackground, getThemeLabel, getMoodLabel, getLengthLabel, type Mood, type Theme, type Length } from "./constants"
+import { getLogger } from "../../lib/logger"
 
 const COVER_WIDTH = 1200
 const COVER_HEIGHT = 630
@@ -232,7 +233,9 @@ export interface GenerateCoverOutput {
  * Generate cover image (1200x630) and optionally square version (600x600)
  */
 export async function generateCoverWebp(input: GenerateCoverInput): Promise<GenerateCoverOutput> {
+  const logger = getLogger()
   const { title, theme, mood, length } = input
+  const start = Date.now()
 
   // Pick assets deterministically
   const poseNumber = pickPose(mood, length)
@@ -334,6 +337,18 @@ export async function generateCoverWebp(input: GenerateCoverInput): Promise<Gene
     ])
     .webp({ quality: 90 })
     .toBuffer()
+
+  const durationMs = Date.now() - start
+  logger.info(
+    {
+      backgroundId: bgNumber,
+      poseId: poseNumber,
+      durationMs,
+      outputBytes: cover.length,
+      outputSquareBytes: coverSquare.length,
+    },
+    "cover.generated",
+  )
 
   return { cover, coverSquare }
 }

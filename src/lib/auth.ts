@@ -7,6 +7,7 @@ import { EmailService } from "../plugins/email/email.service";
 import { VerificationEmail } from "../plugins/email/templates/verification-email";
 import { ResetPasswordEmail } from "../plugins/email/templates/reset-password-email";
 import { expo } from "@better-auth/expo";
+import { getLogger } from "./logger";
 
 export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_URL || 'https://solvo.ngrok.app/api/auth',
@@ -41,14 +42,14 @@ export const auth = betterAuth({
                     userEmail: user.email
                 });
                 await EmailService.sendTemplate(user.email, subject, html);
-                console.log(`✅ Password reset email sent successfully to ${user.email}`);
+                getLogger().info({ email: user.email }, "auth.password_reset_email_sent");
             } catch (error) {
-                console.error('❌ Failed to send password reset email:', error);
+                getLogger().error({ err: error, email: user.email }, "auth.password_reset_email_failed");
                 throw error;
             }
         },
         onPasswordReset: async ({ user }, _request) => {
-            console.log(`ℹ️ Password for user ${user.email} has been reset.`);
+            getLogger().info({ email: user.email }, "auth.password_reset");
         },
     },
     resetPassword: {
@@ -87,9 +88,9 @@ export const auth = betterAuth({
                         VerificationEmail({ otp, type })
                     );
                     
-                    console.log(`✅ OTP email sent successfully to ${email}`);
+                    getLogger().info({ email, type }, "auth.otp_email_sent");
                 } catch (error) {
-                    console.error('❌ Failed to send OTP email:', error);
+                    getLogger().error({ err: error, email, type }, "auth.otp_email_failed");
                     throw error;
                 }
             },

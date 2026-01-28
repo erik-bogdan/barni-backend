@@ -2,6 +2,10 @@ import { and, eq } from "drizzle-orm"
 
 import { db } from "../lib/db"
 import { themeCategories, themes } from "../../packages/db/src/schema"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("backend")
+setLogger(logger)
 
 type SeedTheme = {
   category: string
@@ -104,11 +108,11 @@ export async function seedThemes() {
 if (import.meta.main) {
   seedThemes()
     .then(() => {
-      console.log("✅ themes seed complete")
+      logger.info("themes.seed_complete")
       process.exit(0)
     })
     .catch((err) => {
-      console.error("❌ themes seed failed", err)
+      logger.error({ err }, "themes.seed_failed")
       process.exit(1)
     })
 }

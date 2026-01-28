@@ -8,25 +8,29 @@
 import { writeFileSync, existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { generateCoverWebp } from "../services/cover/generateCover"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("backend")
+setLogger(logger)
 
 async function testCoverGeneration() {
-  console.log("🎨 Testing cover generation...\n")
+  logger.info("cover_test.start")
 
   // Check if assets exist
   const barniPath = resolve(process.cwd(), "assets", "images", "barni", "1.png")
   const bgPath = resolve(process.cwd(), "assets", "images", "bgs", "bg1_default.png")
 
   if (!existsSync(barniPath)) {
-    console.error(`❌ Barni asset not found: ${barniPath}`)
+    logger.error({ path: barniPath }, "cover_test.barni_missing")
     process.exit(1)
   }
 
   if (!existsSync(bgPath)) {
-    console.error(`❌ Background asset not found: ${bgPath}`)
+    logger.error({ path: bgPath }, "cover_test.background_missing")
     process.exit(1)
   }
 
-  console.log("✅ Assets found\n")
+  logger.info("cover_test.assets_found")
 
   // Test different combinations
   const testCases = [
@@ -58,8 +62,17 @@ async function testCoverGeneration() {
 
   for (let i = 0; i < testCases.length; i++) {
     const testCase = testCases[i]
-    console.log(`Generating cover ${i + 1}/${testCases.length}: ${testCase.title}`)
-    console.log(`  Theme: ${testCase.theme}, Mood: ${testCase.mood}, Length: ${testCase.length}`)
+    logger.info(
+      {
+        index: i + 1,
+        total: testCases.length,
+        title: testCase.title,
+        theme: testCase.theme,
+        mood: testCase.mood,
+        length: testCase.length,
+      },
+      "cover_test.case_start",
+    )
 
     try {
       const result = await generateCoverWebp(testCase)
@@ -67,26 +80,30 @@ async function testCoverGeneration() {
       // Save main cover
       const coverPath = resolve(outputDir, `cover_${i + 1}_${testCase.theme}_${testCase.mood}.webp`)
       writeFileSync(coverPath, result.cover)
-      console.log(`  ✅ Main cover saved: ${coverPath} (${result.cover.length} bytes)`)
+      logger.info(
+        { path: coverPath, bytes: result.cover.length },
+        "cover_test.cover_saved",
+      )
 
       // Save square cover
       if (result.coverSquare) {
         const squarePath = resolve(outputDir, `cover_${i + 1}_${testCase.theme}_${testCase.mood}_square.webp`)
         writeFileSync(squarePath, result.coverSquare)
-        console.log(`  ✅ Square cover saved: ${squarePath} (${result.coverSquare.length} bytes)`)
+        logger.info(
+          { path: squarePath, bytes: result.coverSquare.length },
+          "cover_test.cover_square_saved",
+        )
       }
 
-      console.log()
     } catch (error) {
-      console.error(`  ❌ Error generating cover:`, error)
-      console.log()
+      logger.error({ err: error }, "cover_test.case_failed")
     }
   }
 
-  console.log(`\n✨ Test complete! Check the output files in: ${outputDir}`)
+  logger.info({ outputDir }, "cover_test.complete")
 }
 
 testCoverGeneration().catch((error) => {
-  console.error("Fatal error:", error)
+  logger.error({ err: error }, "cover_test.fatal")
   process.exit(1)
 })

@@ -1,4 +1,5 @@
 import * as nodemailer from "nodemailer";
+import { getLogger } from "../../lib/logger";
 
 export class EmailService {
     
@@ -14,11 +15,16 @@ export class EmailService {
 
     static async send(to: string, subject: string, html: string) {
         try {
-            console.log("[EmailService] Sending email to:", to)
-            console.log("[EmailService] Subject:", subject)
-            console.log("[EmailService] Host:", process.env.MAILTRAP_HOST || '127.0.0.1')
-            console.log("[EmailService] Port:", process.env.MAILTRAP_PORT || '1025')
-            console.log("[EmailService] From:", process.env.MAIL_FROM || 'noreply@moneyapp.local')
+            getLogger().info(
+                {
+                    to,
+                    subject,
+                    host: process.env.MAILTRAP_HOST || '127.0.0.1',
+                    port: process.env.MAILTRAP_PORT || '1025',
+                    from: process.env.MAIL_FROM || 'noreply@moneyapp.local',
+                },
+                "email.send",
+            )
             
             const result = await this.transporter.sendMail({
                 from: process.env.MAIL_FROM || 'noreply@moneyapp.local',
@@ -27,12 +33,17 @@ export class EmailService {
                 html,
             })
             
-            console.log("[EmailService] Email sent successfully:", result.messageId)
+            getLogger().info({ messageId: result.messageId }, "email.sent")
             return result
         } catch (error: any) {
-            console.error("[EmailService] Error sending email:", error)
-            console.error("[EmailService] Error message:", error?.message)
-            console.error("[EmailService] Error code:", error?.code)
+            getLogger().error(
+                {
+                    err: error,
+                    message: error?.message,
+                    code: error?.code,
+                },
+                "email.send_failed",
+            )
             throw error
         }
     }

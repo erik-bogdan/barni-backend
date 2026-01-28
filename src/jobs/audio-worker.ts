@@ -12,6 +12,10 @@ import { calcAudioCost } from "../services/credits"
 import { buildPublicUrl, uploadBuffer } from "../services/s3"
 import { AUDIO_QUEUE } from "./audio-queue"
 import { createCoverRepo, processCoverJob, createFreeStoryCoverRepo, processFreeStoryCoverJob } from "../services/cover/coverService"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("worker-audio")
+setLogger(logger)
 
 const rabbitUrl = process.env.RABBITMQ_URL || "amqp://localhost:5672"
 const heartbeatUrl = process.env.UPTIME_KUMA_PUSH_URL_AUDIO_WORKER
@@ -40,7 +44,9 @@ async function startHeartbeat(url?: string) {
 }
 
 async function startAudioWorker() {
+  logger.info({ queue: AUDIO_QUEUE }, "worker.starting")
   const conn = await amqp.connect(rabbitUrl)
+  logger.info({ queue: AUDIO_QUEUE }, "rabbit.connected")
   const channel = await conn.createChannel()
 
   startHeartbeat(heartbeatUrl)
@@ -48,7 +54,8 @@ async function startAudioWorker() {
   await channel.assertQueue(AUDIO_QUEUE, { durable: true })
   await channel.prefetch(2)
 
-  console.log(`[audio-worker] waiting for messages on ${AUDIO_QUEUE}`)
+  logger.info({ queue: AUDIO_QUEUE }, "queue.asserted")
+  logger.info({ queue: AUDIO_QUEUE }, "queue.consuming")
 
   channel.consume(AUDIO_QUEUE, async (msg) => {
     if (!msg) return
@@ -57,6 +64,14 @@ async function startAudioWorker() {
     try {
       const payload = JSON.parse(msg.content.toString()) as AudioJobPayload
       if (!payload.storyId) throw new Error("Missing storyId")
+
+      const jobLogger = logger.child({
+        jobId: payload.jobId,
+        storyId: payload.storyId,
+        queue: AUDIO_QUEUE,
+      })
+      jobLogger.info("job.received")
+      jobLogger.info({ jobType: payload.jobType }, "job.started")
 
       // Handle cover generation jobs
       if (payload.jobType === "cover.generate") {
@@ -85,7 +100,7 @@ async function startAudioWorker() {
           )
         }
         channel.ack(msg)
-        console.log(`[audio-worker] cover completed ${payload.storyId}`)
+        jobLogger.info({ jobType: payload.jobType }, "job.completed")
         return
       }
 
@@ -114,7 +129,7 @@ async function startAudioWorker() {
       }
 
       channel.ack(msg)
-      console.log(`[audio-worker] completed ${payload.storyId}`)
+      jobLogger.info({ jobType: payload.jobType }, "job.completed")
     } catch (err) {
       const error = err as Error
       let payload: AudioJobPayload | null = null
@@ -140,7 +155,7 @@ async function startAudioWorker() {
           }
         }
       } catch (updateErr) {
-        console.error("[audio-worker] failed to mark story", updateErr)
+        logger.error({ err: updateErr }, "job.update_failed")
       }
       if (attempts < 2) {
         const nextAttempts = attempts + 1
@@ -152,7 +167,7 @@ async function startAudioWorker() {
           })
         }, delayMs)
         channel.ack(msg)
-        console.warn(`[audio-worker] retrying (${nextAttempts})`, error?.message)
+        logger.warn({ attempts: nextAttempts, delayMs, err: error }, "job.retrying")
         return
       }
       if (payload?.storyId && payload.userId && payload.userId !== "" && payload.jobType !== "cover.generate") {
@@ -168,17 +183,25 @@ async function startAudioWorker() {
             length: story?.length,
             fallbackAmount,
           })
+          logger.error(
+            {
+              userId: payload.userId,
+              storyId: payload.storyId,
+              fallbackAmount,
+            },
+            "job.refund_issued",
+          )
         } catch (refundErr) {
-          console.error("[audio-worker] failed to refund on final failure", refundErr)
+          logger.error({ err: refundErr }, "job.refund_failed")
         }
       }
-      console.error("[audio-worker] failed", error)
+      logger.error({ err: error, storyId: payload?.storyId, jobId: payload?.jobId }, "job.failed")
       channel.ack(msg)
     }
   })
 }
 
 startAudioWorker().catch((err) => {
-  console.error("[audio-worker] fatal", err)
+  logger.fatal({ err }, "worker.fatal")
   process.exit(1)
 })

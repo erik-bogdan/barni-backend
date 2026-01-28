@@ -11,6 +11,7 @@ import {
   DocumentLanguage,
   Currency,
 } from "@codingsans/billingo-client";
+import { getLogger } from "../lib/logger";
 
 // Initialize Billingo client
 OpenAPI.HEADERS = {
@@ -85,12 +86,15 @@ export async function createInvoiceForOrder(
     };
   } else {
     // Use minimal required address fields if missing
-    console.log("[Billingo] Using default address - missing or incomplete fields:", {
-      hasBillingAddress: !!userProfile.billingAddress,
-      postalCode: userProfile.billingAddress?.postalCode,
-      city: userProfile.billingAddress?.city,
-      street: userProfile.billingAddress?.street,
-    });
+    getLogger().warn(
+      {
+        hasBillingAddress: Boolean(userProfile.billingAddress),
+        hasPostalCode: Boolean(userProfile.billingAddress?.postalCode),
+        hasCity: Boolean(userProfile.billingAddress?.city),
+        hasStreet: Boolean(userProfile.billingAddress?.street),
+      },
+      "billingo.default_address_used",
+    );
     
     partnerAddress = {
       country_code: "HU" as any,
@@ -115,12 +119,13 @@ export async function createInvoiceForOrder(
     partner.taxcode = userProfile.billingAddress.taxNumber.trim();
   }
 
-  console.log("[Billingo] Creating partner:", {
-    name: partner.name,
-    address: partner.address,
-    emails: partner.emails,
-    taxcode: partner.taxcode,
-  });
+  getLogger().info(
+    {
+      hasEmail: Boolean(partner.emails?.length),
+      hasTaxCode: Boolean(partner.taxcode),
+    },
+    "billingo.partner_create",
+  );
 
   // Create partner using library - directly pass Partner object
   const partnerResponse = await PartnerService.createPartner(partner);
@@ -130,7 +135,7 @@ export async function createInvoiceForOrder(
     throw new Error("Failed to create partner: no ID returned");
   }
 
-  console.log(`[Billingo] Partner created with ID: ${partnerId}`);
+  getLogger().info({ partnerId }, "billingo.partner_created");
 
   // Format dates
   const today = new Date();
@@ -178,12 +183,15 @@ export async function createInvoiceForOrder(
     comment: `Stripe rendelés: ${order.id}`,
   };
 
-  console.log("[Billingo] Creating invoice:", {
-    partner_id: documentInsert.partner_id,
-    type: documentInsert.type,
-    fulfillment_date: documentInsert.fulfillment_date,
-    items_count: documentInsert.items?.length || 0,
-  });
+  getLogger().info(
+    {
+      partnerId: documentInsert.partner_id,
+      type: documentInsert.type,
+      fulfillmentDate: documentInsert.fulfillment_date,
+      itemsCount: documentInsert.items?.length || 0,
+    },
+    "billingo.invoice_create",
+  );
 
   const documentResponse = await DocumentService.createDocument(documentInsert);
 
@@ -192,7 +200,7 @@ export async function createInvoiceForOrder(
     throw new Error("Failed to create invoice: no ID returned");
   }
 
-  console.log(`[Billingo] Invoice created with ID: ${invoiceId}`);
+  getLogger().info({ invoiceId }, "billingo.invoice_created");
 
   return invoiceId;
 }

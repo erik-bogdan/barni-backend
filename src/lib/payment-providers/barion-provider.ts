@@ -15,6 +15,8 @@ import { env } from "../../env";
 import { db } from "../db";
 import { barionCustomers } from "../../../packages/db/src/schema";
 import { eq } from "drizzle-orm";
+import { getLogger } from "../logger";
+import type { Logger } from "../logger";
 import type {
   PaymentProvider,
   CreateCheckoutSessionParams,
@@ -62,7 +64,7 @@ export class BarionProvider implements PaymentProvider {
     this.payee = env.BARION_PAYEE;
   }
 
-  async ensureCustomer(userId: string, email: string): Promise<string> {
+  async ensureCustomer(userId: string, email: string, _logger?: Logger): Promise<string> {
     // Barion doesn't require pre-creating customers like Stripe
     // We store the email for reference
     const [row] = await db
@@ -87,6 +89,7 @@ export class BarionProvider implements PaymentProvider {
   async createCheckoutSession(
     params: CreateCheckoutSessionParams,
   ): Promise<CheckoutSession> {
+    const logger = params.logger ?? getLogger();
     const {
       orderId,
       userId,
@@ -165,14 +168,14 @@ export class BarionProvider implements PaymentProvider {
 
     try {
       // Log request (without sensitive data)
-      console.log("[Barion] Creating payment request:", {
+      logger.info({
         orderId,
         amount: barionAmount,
         currency: currency.toUpperCase(),
         planCode,
         redirectUrl: redirectUrlWithParams,
         callbackUrl,
-      });
+      }, "barion.payment_request_create");
 
       // Call Barion API
       const result = await this.apiClient.startPayment(paymentRequest);
@@ -182,12 +185,12 @@ export class BarionProvider implements PaymentProvider {
         throw new Error("Invalid response from Barion API: Missing PaymentId");
       }
 
-      console.log("[Barion] Payment created successfully:", {
+      logger.info({
         paymentId: result.PaymentId,
         status: result.Status,
         redirectUrl: result.RedirectUrl,
         qrUrl: result.QRUrl,
-      });
+      }, "barion.payment_created");
 
       // IMPORTANT: Barion API behavior understanding:
       // - If status is "Prepared" or "Started", payment is not yet completed
@@ -200,7 +203,7 @@ export class BarionProvider implements PaymentProvider {
       // Check if payment was already completed (unlikely in sandbox, but possible)
       if ((result.Status === "Succeeded" || result.Status === "PartiallySucceeded") && result.RedirectUrl) {
         // Payment already completed, redirect to success page
-        console.log("[Barion] Payment already completed, redirecting to success page");
+        logger.info("barion.payment_already_completed");
         paymentPageUrl = result.RedirectUrl;
       } else {
         // Payment not yet completed - redirect to Barion payment page
@@ -212,12 +215,12 @@ export class BarionProvider implements PaymentProvider {
         
         paymentPageUrl = `${barionPaymentDomain}/Pay?id=${result.PaymentId}`;
         
-        console.log("[Barion] Redirecting to Barion payment page:", {
+        logger.info({
           paymentId: result.PaymentId,
           status: result.Status,
           paymentPageUrl,
           redirectUrlAfterPayment: result.RedirectUrl,
-        });
+        }, "barion.payment_redirect");
       }
 
       // Build metadata with optional fields
@@ -249,19 +252,19 @@ export class BarionProvider implements PaymentProvider {
       // Enhanced error handling
       if (error instanceof Error && "statusCode" in error) {
         const apiError = error as BarionApiError;
-        console.error("[Barion] API error:", {
+        logger.error({
           statusCode: apiError.statusCode,
           message: apiError.message,
           errors: apiError.errors,
           orderId,
-        });
+        }, "barion.api_error");
       } else {
-        console.error("[Barion] Error creating payment:", {
+        logger.error({
           error: error instanceof Error ? error.message : String(error),
           orderId,
           amount: barionAmount,
           currency,
-        });
+        }, "barion.payment_create_failed");
       }
       throw error;
     }
@@ -343,10 +346,13 @@ export class BarionProvider implements PaymentProvider {
     try {
       return await this.apiClient.getPaymentState(paymentId);
     } catch (error) {
-      console.error("[Barion] Error getting payment state:", {
-        paymentId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      getLogger().error(
+        {
+          paymentId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "barion.payment_state_failed",
+      );
       throw error;
     }
   }

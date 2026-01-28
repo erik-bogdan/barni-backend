@@ -1,6 +1,10 @@
 import { db } from "../lib/db"
 import { storyPricing } from "../../packages/db/src/schema"
 import { eq } from "drizzle-orm"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("backend")
+setLogger(logger)
 
 const DEFAULT_PRICING = [
   // Regular stories
@@ -20,7 +24,7 @@ const DEFAULT_PRICING = [
 ]
 
 export async function seedStoryPricing() {
-  console.log("Seeding story pricing...")
+  logger.info("story_pricing.seed_start")
 
   for (const pricing of DEFAULT_PRICING) {
     const [existing] = await db
@@ -38,25 +42,31 @@ export async function seedStoryPricing() {
           updatedAt: new Date(),
         })
         .where(eq(storyPricing.key, pricing.key))
-      console.log(`Updated pricing for ${pricing.key}: ${pricing.credits} credits`)
+      logger.info(
+        { key: pricing.key, credits: pricing.credits },
+        "story_pricing.updated",
+      )
     } else {
       // Insert new pricing
       await db.insert(storyPricing).values(pricing)
-      console.log(`Created pricing for ${pricing.key}: ${pricing.credits} credits`)
+      logger.info(
+        { key: pricing.key, credits: pricing.credits },
+        "story_pricing.created",
+      )
     }
   }
 
-  console.log("Story pricing seeded successfully!")
+  logger.info("story_pricing.seed_complete")
 }
 
 if (import.meta.main) {
   seedStoryPricing()
     .then(() => {
-      console.log("Done!")
+      logger.info("story_pricing.seed_done")
       process.exit(0)
     })
     .catch((err) => {
-      console.error("Error seeding story pricing:", err)
+      logger.error({ err }, "story_pricing.seed_failed")
       process.exit(1)
     })
 }

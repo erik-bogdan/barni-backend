@@ -7,6 +7,10 @@ import { processStoryJob } from "./processors/story"
 import { QUEUE_NAME } from "./queue"
 import { createCoverRepo, processCoverJob } from "../services/cover/coverService"
 import { uploadBuffer, buildPublicUrl } from "../services/s3"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("worker-story")
+setLogger(logger)
 
 const repo = createStoryRepo(db)
 
@@ -26,7 +30,9 @@ async function startHeartbeat(url?: string) {
 }
 
 async function startWorker() {
+  logger.info({ queue: QUEUE_NAME }, "worker.starting")
   const conn = await amqp.connect(rabbitUrl)
+  logger.info({ queue: QUEUE_NAME }, "rabbit.connected")
   const channel = await conn.createChannel()
 
   startHeartbeat(heartbeatUrl)
@@ -34,13 +40,18 @@ async function startWorker() {
   await channel.assertQueue(QUEUE_NAME, { durable: true })
   await channel.prefetch(2)
 
-  console.log(`[story-worker] waiting for messages on ${QUEUE_NAME}`)
+  logger.info({ queue: QUEUE_NAME }, "queue.asserted")
+  logger.info({ queue: QUEUE_NAME }, "queue.consuming")
 
   channel.consume(QUEUE_NAME, async (msg) => {
     if (!msg) return
     try {
       const payload = JSON.parse(msg.content.toString()) as { storyId: string }
       if (!payload.storyId) throw new Error("Missing storyId")
+
+      const jobLogger = logger.child({ storyId: payload.storyId, queue: QUEUE_NAME })
+      jobLogger.info("job.received")
+      jobLogger.info("job.started")
 
       await processStoryJob(payload.storyId, {
         repo,
@@ -59,16 +70,16 @@ async function startWorker() {
         s3: { uploadBuffer, buildPublicUrl },
       })
       channel.ack(msg)
-      console.log(`[story-worker] completed ${payload.storyId}`)
+      jobLogger.info("job.completed")
     } catch (err) {
-      console.error("[story-worker] failed", err)
+      logger.error({ err }, "job.failed")
       channel.nack(msg, false, false)
     }
   })
 }
 
 startWorker().catch((err) => {
-  console.error("[story-worker] fatal", err)
+  logger.fatal({ err }, "worker.fatal")
   process.exit(1)
 })
 

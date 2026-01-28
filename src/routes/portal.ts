@@ -615,7 +615,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
     },
   )
   // Free Stories - public endpoint (no auth required)
-  .get("/free-stories", async () => {
+  .get("/free-stories", async ({ logger }) => {
     const activeFreeStories = await db
       .select()
       .from(freeStories)
@@ -634,7 +634,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
             const coverKey = buildFreeStoryCoverKey(story.id)
             coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
             // Fallback to original URL
           }
         }
@@ -645,7 +645,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
             const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
             coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
           } catch (error) {
-            console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+            logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
             // Fallback to original URL
           }
         }
@@ -660,7 +660,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
 
     return { items }
   })
-  .get("/free-stories/:id", async ({ params, set }) => {
+  .get("/free-stories/:id", async ({ params, set, logger }) => {
     const [story] = await db
       .select()
       .from(freeStories)
@@ -685,7 +685,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         const coverKey = buildFreeStoryCoverKey(story.id)
         coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for cover ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
         // Fallback to original URL
       }
     }
@@ -696,7 +696,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
         coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for square cover ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
         // Fallback to original URL
       }
     }
@@ -708,7 +708,7 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         const audioKey = buildFreeStoryAudioKey(story.id)
         audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
       } catch (error) {
-        console.error(`Failed to generate presigned URL for audio ${story.id}:`, error)
+        logger.error({ err: error, storyId: story.id }, "audio.presign_failed")
         // Fallback to original URL
       }
     }

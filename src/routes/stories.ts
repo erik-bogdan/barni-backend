@@ -16,8 +16,9 @@ import { THEMES } from "../services/storyPrompt"
 import { requestStoryAudio, createAudioRepo, buildAudioKey } from "../services/audio"
 import { getPresignedUrl } from "../services/s3"
 import { buildCoverKey, buildCoverSquareKey } from "../services/cover/coverService"
+import { getLogger } from "../lib/logger"
 
-async function requireSession(headers: Headers, set: { status: number }) {
+async function requireSession(headers: Headers, set: { status?: number | string }) {
   const session = await auth.api.getSession({ headers })
   if (!session) {
     set.status = 401
@@ -30,6 +31,7 @@ const moodValues = ["nyugodt", "vidam", "kalandos"] as const
 const lengthValues = ["short", "medium", "long"] as const
 
 export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
+  .decorate("logger", getLogger())
   .post(
     "/children/:childId/stories",
     async ({ request, params, body, set }) => {
@@ -132,7 +134,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
   )
   .get(
     "/children/:childId/stories",
-    async ({ request, params, query, set }) => {
+    async ({ request, params, query, set, logger }) => {
       const session = await requireSession(request.headers, set)
       if (!session) return { error: "Unauthorized" }
 
@@ -193,7 +195,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
               const coverKey = buildCoverKey(r.id)
               coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
             } catch (error) {
-              console.error(`Failed to generate presigned URL for cover ${r.id}:`, error)
+              logger.error({ err: error, storyId: r.id }, "cover.presign_failed")
               // Fallback to original URL
             }
           }
@@ -204,7 +206,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
               const coverSquareKey = buildCoverSquareKey(r.id)
               coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
             } catch (error) {
-              console.error(`Failed to generate presigned URL for square cover ${r.id}:`, error)
+              logger.error({ err: error, storyId: r.id }, "cover_square.presign_failed")
               // Fallback to original URL
             }
           }
@@ -248,7 +250,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
   )
   .delete(
     "/stories/:storyId",
-    async ({ request, params, set }) => {
+    async ({ request, params, set, logger }) => {
       const session = await requireSession(request.headers, set)
       if (!session) return { error: "Unauthorized" }
 
@@ -284,7 +286,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
   )
   .get(
     "/stories/:storyId",
-    async ({ request, params, set }) => {
+    async ({ request, params, set, logger }) => {
       const session = await requireSession(request.headers, set)
       if (!session) return { error: "Unauthorized" }
 
@@ -331,7 +333,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           const audioKey = buildAudioKey(row.id)
           audioUrl = await getPresignedUrl(audioKey, 3600) // 1 hour expiry
         } catch (error) {
-          console.error("Failed to generate presigned URL for audio:", error)
+          logger.error({ err: error, storyId: row.id }, "audio.presign_failed")
           // Fallback to original URL if presigned URL generation fails
           audioUrl = row.audioUrl
         }
@@ -346,7 +348,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           const coverKey = buildCoverKey(row.id)
           coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
         } catch (error) {
-          console.error(`Failed to generate presigned URL for cover ${row.id}:`, error)
+          logger.error({ err: error, storyId: row.id }, "cover.presign_failed")
           // Fallback to original URL
         }
       }
@@ -356,7 +358,7 @@ export const storiesApi = new Elysia({ name: "stories-api", prefix: "/api" })
           const coverSquareKey = buildCoverSquareKey(row.id)
           coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
         } catch (error) {
-          console.error(`Failed to generate presigned URL for square cover ${row.id}:`, error)
+          logger.error({ err: error, storyId: row.id }, "cover_square.presign_failed")
           // Fallback to original URL
         }
       }

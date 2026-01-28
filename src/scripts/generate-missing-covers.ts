@@ -12,11 +12,15 @@ import { createCoverRepo, buildCoverKey, buildCoverSquareKey } from "../services
 import { generateCoverWebp } from "../services/cover/generateCover"
 import { type Mood, type Theme, type Length } from "../services/cover/constants"
 import { uploadBuffer, buildPublicUrl } from "../services/s3"
+import { createLogger, setLogger } from "../lib/logger"
+
+const logger = createLogger("backend")
+setLogger(logger)
 
 const COVER_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 async function generateMissingCovers() {
-  console.log("🎨 Generating missing covers...\n")
+  logger.info("covers.generate_missing.start")
 
   // Find all stories without cover
   // Use IS NULL instead of eq(column, null) because SQL null comparison doesn't work with =
@@ -41,11 +45,11 @@ async function generateMissingCovers() {
   const total = storiesWithoutCover.length
 
   if (total === 0) {
-    console.log("✅ No stories missing covers!")
+    logger.info("covers.generate_missing.none")
     return
   }
 
-  console.log(`Found ${total} story/stories without cover(s)\n`)
+  logger.info({ total }, "covers.generate_missing.found")
 
   const repo = createCoverRepo(db)
   let successCount = 0
@@ -57,18 +61,18 @@ async function generateMissingCovers() {
 
     // Skip if story doesn't have title
     if (!story.title) {
-      console.log(`${progress} ⏭️  Skipping ${story.id} - no title`)
+      logger.info({ storyId: story.id }, "covers.generate_missing.skip_no_title")
       continue
     }
 
     // Skip if already has both covers
     if (story.coverUrl && story.coverSquareUrl) {
-      console.log(`${progress} ⏭️  Skipping ${story.id} - already has covers`)
+      logger.info({ storyId: story.id }, "covers.generate_missing.skip_existing")
       continue
     }
 
     try {
-      console.log(`${progress} 📝 Processing: ${story.title} (${story.id})`)
+    logger.info({ storyId: story.id, title: story.title }, "covers.generate_missing.processing")
 
       // Generate cover
       const { cover, coverSquare } = await generateCoverWebp({
@@ -89,7 +93,7 @@ async function generateMissingCovers() {
           cacheControl: COVER_CACHE_CONTROL,
         })
         coverUrl = buildPublicUrl(coverKey)
-        console.log(`   ✅ Main cover uploaded: ${coverKey}`)
+        logger.info({ storyId: story.id, coverKey }, "covers.generate_missing.cover_uploaded")
       }
 
       // Upload square cover (if missing)
@@ -103,7 +107,7 @@ async function generateMissingCovers() {
           cacheControl: COVER_CACHE_CONTROL,
         })
         coverSquareUrl = buildPublicUrl(coverSquareKey)
-        console.log(`   ✅ Square cover uploaded: ${coverSquareKey}`)
+        logger.info({ storyId: story.id, coverSquareKey }, "covers.generate_missing.cover_square_uploaded")
       }
 
       // Update database
@@ -113,11 +117,13 @@ async function generateMissingCovers() {
       })
 
       successCount++
-      console.log(`   ✨ Cover assigned to story\n`)
+      logger.info({ storyId: story.id }, "covers.generate_missing.assigned")
     } catch (error) {
       errorCount++
-      console.error(`   ❌ Error:`, error instanceof Error ? error.message : error)
-      console.log()
+      logger.error(
+        { err: error, storyId: story.id },
+        "covers.generate_missing.failed",
+      )
 
       // Update DB to mark as failed (null coverUrl)
       try {
@@ -126,25 +132,26 @@ async function generateMissingCovers() {
           coverSquareUrl: null,
         })
       } catch (updateErr) {
-        console.error(`   ⚠️  Failed to update DB:`, updateErr)
+        logger.error(
+          { err: updateErr, storyId: story.id },
+          "covers.generate_missing.db_update_failed",
+        )
       }
     }
   }
 
-  console.log("\n" + "=".repeat(50))
-  console.log(`✨ Summary:`)
-  console.log(`   ✅ Success: ${successCount}`)
-  console.log(`   ❌ Errors: ${errorCount}`)
-  console.log(`   📊 Total: ${total}`)
-  console.log("=".repeat(50))
+  logger.info(
+    { successCount, errorCount, total },
+    "covers.generate_missing.summary",
+  )
 }
 
 generateMissingCovers()
   .then(() => {
-    console.log("\n✅ Done!")
+    logger.info("covers.generate_missing.done")
     process.exit(0)
   })
   .catch((error) => {
-    console.error("\n❌ Fatal error:", error)
+    logger.error({ err: error }, "covers.generate_missing.fatal")
     process.exit(1)
   })

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { pickPose, pickBackground, getThemeLabel, getMoodLabel, getLengthLabel } from "../services/cover/constants"
 import { generateCoverWebp } from "../services/cover/generateCover"
+import { getLogger } from "../lib/logger"
 
 describe("Cover Generation - Constants", () => {
   describe("pickPose", () => {
@@ -97,7 +98,7 @@ describe("Cover Generation - generateCoverWebp", () => {
     const bgPath = resolve(process.cwd(), "assets", "images", "bgs", "bg1_default.png")
 
     if (!existsSync(barniPath) || !existsSync(bgPath)) {
-      console.log("Skipping test - assets not found")
+      getLogger().info("cover_test.skipped_assets")
       return
     }
 

@@ -3,10 +3,12 @@
  */
 
 import Stripe from "stripe";
+import type { Logger } from "../logger";
 import { env } from "../../env";
 import { db } from "../db";
 import { stripeCustomers, user } from "../../../packages/db/src/schema";
 import { eq } from "drizzle-orm";
+import { getLogger } from "../logger";
 import type {
   PaymentProvider,
   CreateCheckoutSessionParams,
@@ -24,7 +26,7 @@ export class StripeProvider implements PaymentProvider {
     });
   }
 
-  async ensureCustomer(userId: string, email: string): Promise<string> {
+  async ensureCustomer(userId: string, email: string, logger: Logger = getLogger()): Promise<string> {
     const [row] = await db
       .select()
       .from(stripeCustomers)
@@ -39,9 +41,9 @@ export class StripeProvider implements PaymentProvider {
       } catch (error: any) {
         // Customer doesn't exist in Stripe (deleted or wrong account)
         // Delete from DB and create a new one
-        console.warn(
-          `[Stripe] Customer ${row.customerId} not found in Stripe, creating new one:`,
-          error.message,
+        logger.warn(
+          { customerId: row.customerId, error: error.message },
+          "stripe.customer_missing_recreating",
         );
         await db.delete(stripeCustomers).where(eq(stripeCustomers.userId, userId));
       }
@@ -65,6 +67,7 @@ export class StripeProvider implements PaymentProvider {
   async createCheckoutSession(
     params: CreateCheckoutSessionParams,
   ): Promise<CheckoutSession> {
+    const logger = params.logger ?? getLogger();
     const {
       orderId,
       userId,
@@ -83,8 +86,9 @@ export class StripeProvider implements PaymentProvider {
     // Ensure currency is lowercase and valid
     const stripeCurrency = currency.toLowerCase();
     if (stripeCurrency !== "huf") {
-      console.warn(
-        `[Stripe Checkout] Unexpected currency: ${stripeCurrency}, expected 'huf'`,
+      logger.warn(
+        { currency: stripeCurrency, expected: "huf" },
+        "stripe.checkout.unexpected_currency",
       );
     }
 
@@ -114,7 +118,7 @@ export class StripeProvider implements PaymentProvider {
         : stripeUnitAmount;
 
     // Log for debugging
-    console.log("[Stripe Checkout] Creating session with:", {
+    logger.info({
       orderId,
       totalCents,
       stripeUnitAmount,
@@ -126,7 +130,7 @@ export class StripeProvider implements PaymentProvider {
         stripeCurrency === "huf"
           ? "WORKAROUND: Multiplying by 100 to compensate for Stripe SDK bug"
           : "For non-HUF, unit_amount should equal totalCents",
-    });
+    }, "stripe.checkout.create_session");
 
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
@@ -171,12 +175,12 @@ export class StripeProvider implements PaymentProvider {
         idempotencyKey: `checkout_create:${orderId}`,
       });
 
-      console.log("[Stripe Checkout] Session created successfully:", {
+      logger.info({
         sessionId: session.id,
         amountTotal: session.amount_total,
         currency: session.currency,
         url: session.url,
-      });
+      }, "stripe.checkout.session_created");
 
       return {
         id: session.id,
@@ -188,15 +192,18 @@ export class StripeProvider implements PaymentProvider {
         customerId: session.customer as string | undefined,
       };
     } catch (error: any) {
-      console.error("[Stripe Checkout] Error creating session:", {
-        error: error.message,
-        code: error.code,
-        type: error.type,
-        orderId,
-        totalCents,
-        stripeUnitAmount,
-        currency: stripeCurrency,
-      });
+      logger.error(
+        {
+          err: error,
+          code: error.code,
+          type: error.type,
+          orderId,
+          totalCents,
+          stripeUnitAmount,
+          currency: stripeCurrency,
+        },
+        "stripe.checkout.session_failed",
+      );
       throw error;
     }
   }

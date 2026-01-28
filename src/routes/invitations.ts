@@ -340,7 +340,7 @@ export const invitationsApi = new Elysia({ name: "invitations", prefix: "/invita
   )
 
   // POST /invitations/process-token - Process invitation token after registration (public, but validates token and email)
-  .post("/process-token", async ({ body, set }) => {
+  .post("/process-token", async ({ body, set, logger }) => {
     if (!body.token || !body.email) {
       set.status = 400
       return { error: "Token and email are required" }
@@ -402,7 +402,7 @@ export const invitationsApi = new Elysia({ name: "invitations", prefix: "/invita
       )
       return { success: true }
     } catch (error: any) {
-      console.error("[Invitations] Failed to process token:", error)
+      logger.error({ err: error }, "invitations.process_failed")
       set.status = 500
       return { error: error?.message || "Nem sikerült feldolgozni a meghívót" }
     }
@@ -923,7 +923,7 @@ export const preRegistrationAdminApi = new Elysia({ name: "pre-registration-admi
   // POST /admin/pre-registrations/:id/resend-email - Resend invitation email
   .post(
     "/:id/resend-email",
-    async ({ params, request, set }) => {
+    async ({ params, request, set, logger }) => {
       const session = await requireSession(request.headers, set)
       if (!session) return { error: "Unauthorized" }
 
@@ -960,30 +960,31 @@ export const preRegistrationAdminApi = new Elysia({ name: "pre-registration-admi
       const registerUrl = `${frontendUrl}/register?token=${invitation.token}`
 
       try {
-        console.log("[Resend Email] Starting for:", requestData.email)
-        console.log("[Resend Email] Register URL:", registerUrl)
-        console.log("[Resend Email] Invitation token:", invitation.token)
-        
+        logger.info(
+          { email: requestData.email, invitationId: invitation.id },
+          "resend_email.started",
+        )
+
         const emailHtml = await renderBarniMeseiInvitationEmail({
           inviterName: "Barni",
           registerUrl,
           isApprovalEmail: true,
         })
 
-        console.log("[Resend Email] HTML rendered, length:", emailHtml?.length || 0)
+        logger.info({ htmlLength: emailHtml?.length || 0 }, "resend_email.rendered")
 
         if (!emailHtml || emailHtml.length === 0) {
           throw new Error("Email HTML is empty")
         }
 
-        console.log("[Resend Email] Calling EmailService.sendTemplate...")
+        logger.info("resend_email.sending")
         await EmailService.sendTemplate(
           requestData.email,
           "Barni jóváhagyta a regisztrációs kérelmed",
           emailHtml
         )
 
-        console.log("[Resend Email] Email sent successfully")
+        logger.info("resend_email.sent")
 
         // Update emailSentAt
         const [updated] = await db
@@ -994,13 +995,10 @@ export const preRegistrationAdminApi = new Elysia({ name: "pre-registration-admi
           .where(eq(preRegistrations.id, params.id))
           .returning()
 
-        console.log("[Resend Email] Database updated")
+        logger.info("resend_email.updated")
         return { preRegistration: updated }
       } catch (error: any) {
-        console.error("[Resend Email] Full error:", error)
-        console.error("[Resend Email] Error message:", error?.message)
-        console.error("[Resend Email] Error stack:", error?.stack)
-        console.error("[Resend Email] Error name:", error?.name)
+        logger.error({ err: error, preRegistrationId: params.id }, "resend_email.failed")
         set.status = 500
         return { 
           error: "Nem sikerült elküldeni az emailt",

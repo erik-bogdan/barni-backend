@@ -4,12 +4,16 @@ import { orders, orderItems, user, billingAddresses } from "../../packages/db/sr
 import { getOrderById } from "../services/orders";
 import { createInvoiceForOrder } from "../services/billingo";
 import { updateOrderPayment } from "../services/orders";
+import { createLogger, setLogger } from "../lib/logger";
+
+const logger = createLogger("backend");
+setLogger(logger);
 
 /**
  * Create missing Billingo invoices for paid orders
  */
 export async function createMissingInvoices() {
-  console.log("🔍 Searching for paid orders without Billingo invoices...");
+  logger.info("billingo.missing_invoices.search_start");
 
   // Find all paid orders without billingoInvoiceId
   const ordersWithoutInvoice = await db
@@ -23,10 +27,13 @@ export async function createMissingInvoices() {
     )
     .orderBy(orders.createdAt);
 
-  console.log(`📋 Found ${ordersWithoutInvoice.length} orders without invoices`);
+  logger.info(
+    { count: ordersWithoutInvoice.length },
+    "billingo.missing_invoices.found",
+  );
 
   if (ordersWithoutInvoice.length === 0) {
-    console.log("✅ All paid orders already have invoices");
+    logger.info("billingo.missing_invoices.none");
     return;
   }
 
@@ -35,12 +42,12 @@ export async function createMissingInvoices() {
 
   for (const order of ordersWithoutInvoice) {
     try {
-      console.log(`\n📄 Processing order ${order.id}...`);
+      logger.info({ orderId: order.id }, "billingo.missing_invoices.processing");
 
       // Get order with items
       const orderResult = await getOrderById(db, order.id);
       if (!orderResult) {
-        console.error(`❌ Order ${order.id} not found`);
+        logger.error({ orderId: order.id }, "billingo.missing_invoices.order_missing");
         errorCount++;
         continue;
       }
@@ -55,7 +62,10 @@ export async function createMissingInvoices() {
         .limit(1);
 
       if (!userRow) {
-        console.error(`❌ User ${fullOrder.userId} not found for order ${order.id}`);
+        logger.error(
+          { orderId: order.id, userId: fullOrder.userId },
+          "billingo.missing_invoices.user_missing",
+        );
         errorCount++;
         continue;
       }
@@ -83,7 +93,7 @@ export async function createMissingInvoices() {
       };
 
       // Create invoice
-      console.log(`  💰 Creating invoice for order ${order.id}...`);
+      logger.info({ orderId: order.id }, "billingo.missing_invoices.create_invoice");
       const billingoInvoiceId = await createInvoiceForOrder(
         {
           id: fullOrder.id,
@@ -107,29 +117,39 @@ export async function createMissingInvoices() {
         billingoInvoiceId,
       });
 
-      console.log(`  ✅ Invoice created: ${billingoInvoiceId} for order ${order.id}`);
+      logger.info(
+        { orderId: order.id, billingoInvoiceId },
+        "billingo.missing_invoices.invoice_created",
+      );
       successCount++;
     } catch (error: any) {
-      console.error(`  ❌ Failed to create invoice for order ${order.id}:`, error.message);
+      logger.error(
+        { err: error, orderId: order.id },
+        "billingo.missing_invoices.invoice_failed",
+      );
       errorCount++;
     }
   }
 
-  console.log(`\n📊 Summary:`);
-  console.log(`  ✅ Success: ${successCount}`);
-  console.log(`  ❌ Errors: ${errorCount}`);
-  console.log(`  📋 Total processed: ${ordersWithoutInvoice.length}`);
+  logger.info(
+    {
+      successCount,
+      errorCount,
+      total: ordersWithoutInvoice.length,
+    },
+    "billingo.missing_invoices.summary",
+  );
 }
 
 // Allow running directly: `bun src/scripts/create-missing-invoices.ts`
 if (import.meta.main) {
   createMissingInvoices()
     .then(() => {
-      console.log("\n✅ Script completed");
+      logger.info("billingo.missing_invoices.completed");
       process.exit(0);
     })
     .catch((err) => {
-      console.error("\n❌ Script failed:", err);
+      logger.error({ err }, "billingo.missing_invoices.failed");
       process.exit(1);
     });
 }

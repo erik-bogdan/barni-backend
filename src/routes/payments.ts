@@ -1,4 +1,6 @@
 import { Elysia, t } from "elysia";
+import type { Logger } from "../lib/logger";
+import { randomUUID } from "crypto";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../lib/db";
 import { auth } from "../lib/auth";
@@ -25,8 +27,9 @@ import {
 import { getPaymentProvider, getCurrentProviderType, getPaymentProviderByType } from "../lib/payment-providers/factory";
 import { stripeEvents, barionEvents, orders, orderItems, user, billingAddresses } from "../../packages/db/src/schema";
 import { createInvoiceForOrder } from "../services/billingo";
+import { getLogger } from "../lib/logger";
 
-async function requireSession(headers: Headers, set: { status: number }) {
+async function requireSession(headers: Headers, set: { status?: number | string }) {
   const session = await auth.api.getSession({ headers });
   if (!session) {
     set.status = 401;
@@ -36,6 +39,7 @@ async function requireSession(headers: Headers, set: { status: number }) {
 }
 
 export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
+  .decorate("logger", getLogger())
   // GET /pricing - Public endpoint
   .get("/pricing", async () => {
     const plans = await getActivePricingPlans(db);
@@ -120,7 +124,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
   // POST /checkout/create - Create checkout session
   .post(
     "/checkout/create",
-    async ({ request, body, set }) => {
+    async ({ request, body, set, logger }) => {
       const session = await requireSession(request.headers, set);
       if (!session) return { error: "Unauthorized" };
 
@@ -187,7 +191,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
       }
 
       // Log for debugging (remove in production or use proper logger)
-      console.log("[Checkout] Order calculation:", {
+      logger.info({
         planCode,
         planId: plan.id,
         planName: plan.name,
@@ -199,7 +203,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         totalCents,
         couponCode: coupon?.code || null,
         currency: plan.currency,
-      });
+      }, "checkout.order_calculation");
 
       // Get user email for Stripe customer
       const [userRow] = await db
@@ -214,7 +218,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
       }
 
       // Create order
-      console.log("[Checkout] Creating order with:", {
+      logger.info({
         userId,
         planCode: plan.code,
         quantity,
@@ -223,7 +227,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         discountCents,
         totalCents,
         currency: plan.currency,
-      });
+      }, "checkout.order_create");
 
       const { order } = await createOrder(db, {
         userId,
@@ -235,13 +239,13 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         couponDiscountCents: discountCents,
       });
 
-      console.log("[Checkout] Order created:", {
+      logger.info({
         orderId: order.id,
         orderTotalCents: order.totalCents,
         orderSubtotalCents: order.subtotalCents,
         orderDiscountCents: order.discountCents,
         orderCurrency: order.currency,
-      });
+      }, "checkout.order_created");
 
       // Get payment provider
       const paymentProvider = getPaymentProvider();
@@ -250,20 +254,21 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
       // Ensure customer exists in payment provider
       let customerId: string | undefined;
       try {
-        customerId = await paymentProvider.ensureCustomer(userId, userRow.email);
+        customerId = await paymentProvider.ensureCustomer(userId, userRow.email, logger);
       } catch (err) {
-        console.error(`[Checkout] Failed to ensure ${providerType} customer:`, err);
+        logger.error({ err, provider: providerType }, "checkout.ensure_customer_failed");
         // Continue without customer ID
       }
 
       // Create checkout session
       // IMPORTANT: Use order.totalCents (backend-calculated, not client-provided)
-      console.log(`[Checkout] Creating ${providerType} checkout session for order:`, {
+      logger.info({
         orderId: order.id,
         orderTotalCents: order.totalCents,
         currency: plan.currency,
         planCode: plan.code,
-      });
+        provider: providerType,
+      }, "checkout.session_create");
 
       const checkoutSession = await paymentProvider.createCheckoutSession({
         orderId: order.id,
@@ -275,21 +280,23 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         creditsTotal: order.creditsTotal,
         customerEmail: userRow.email,
         customerId: customerId,
+        logger,
       });
 
       // Verify the amount matches
-      console.log(`[Checkout] ${providerType} session created:`, {
+      logger.info({
         sessionId: checkoutSession.id,
         orderTotal: order.totalCents,
         providerTotal: checkoutSession.amountTotal,
         currency: checkoutSession.currency,
-      });
+        provider: providerType,
+      }, "checkout.session_created");
 
       if (Math.abs(checkoutSession.amountTotal - order.totalCents) > 0.01) {
-        console.error("[Checkout] Amount mismatch!", {
+        logger.error({
           orderTotal: order.totalCents,
           providerTotal: checkoutSession.amountTotal,
-        });
+        }, "checkout.amount_mismatch");
       }
 
       // Update order with provider-specific fields
@@ -420,7 +427,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
   // GET /orders/:id/invoice - Redirect to Billingo invoice public URL
   .get(
     "/orders/:id/invoice",
-    async ({ request, params, set }) => {
+    async ({ request, params, set, logger }) => {
       const session = await requireSession(request.headers, set);
       if (!session) {
         set.status = 401;
@@ -447,14 +454,14 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
 
       try {
         // Get invoice public URL from Billingo
-        const { billingoClient } = await import("../services/billingo");
-        const invoiceUrl = await billingoClient.getInvoicePublicUrl(order.billingoInvoiceId);
+        const { getInvoicePublicUrl } = await import("../services/billingo");
+        const invoiceUrl = await getInvoicePublicUrl(order.billingoInvoiceId);
 
         // Redirect to Billingo public URL
         set.redirect = invoiceUrl;
         return;
       } catch (error: any) {
-        console.error("[Invoice] Failed to get invoice URL:", error);
+        logger.error({ err: error, orderId: params.id }, "invoice.fetch_failed");
         set.status = 500;
         return { error: "Failed to retrieve invoice" };
       }
@@ -481,11 +488,19 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
   // Explicitly disable body parsing for webhook endpoint
   // No body schema = Elysia won't parse JSON, allowing raw body access
   .post("/stripe/webhook", async ({ request, set }) => {
-    console.log("[Stripe Webhook] Received POST request");
-    console.log("[Stripe Webhook] Request URL:", request.url);
-    console.log("[Stripe Webhook] Request method:", request.method);
-    console.log("[Stripe Webhook] Request pathname:", new URL(request.url).pathname);
-    console.log("[Stripe Webhook] Request headers:", Object.fromEntries(request.headers.entries()));
+    const requestId = request.headers.get("x-request-id") ?? randomUUID();
+    set.headers["x-request-id"] = requestId;
+    const logger = getLogger().child({ requestId });
+    const path = new URL(request.url).pathname;
+    logger.info(
+      {
+        method: request.method,
+        path,
+        contentLength: request.headers.get("content-length") ?? undefined,
+        hasSignature: Boolean(request.headers.get("stripe-signature")),
+      },
+      "stripe_webhook.received",
+    );
     
     // CRITICAL: Get raw body for signature verification
     // In Elysia, if no body schema is specified, request.text() gives raw body
@@ -493,9 +508,9 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
     let rawBody: string;
     try {
       rawBody = await request.text();
-      console.log("[Stripe Webhook] Raw body length:", rawBody.length);
+      logger.info({ rawBodyLength: rawBody.length }, "stripe_webhook.body_read");
     } catch (error: any) {
-      console.error("[Stripe Webhook] Error reading raw body:", error);
+      logger.error({ err: error }, "stripe_webhook.body_read_failed");
       set.status = 400;
       return { error: "Failed to read request body" };
     }
@@ -512,9 +527,9 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
     let event;
     try {
       event = await stripeProvider.verifyWebhookSignature(rawBody, signature);
-      console.log("[Stripe Webhook] Signature verified, event type:", event.type);
+      logger.info({ eventType: event.type }, "stripe_webhook.verified");
     } catch (err: any) {
-      console.error("Webhook signature verification failed:", err);
+      logger.error({ err }, "stripe_webhook.verify_failed");
       set.status = 400;
       return { error: err.message };
     }
@@ -532,14 +547,14 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
     } catch (err: any) {
       // If duplicate, that's okay (idempotency)
       if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
-        console.error("Failed to store stripe event:", err);
+        logger.error({ err }, "stripe_webhook.store_failed");
       }
     }
 
     // Acknowledge quickly
     // Process events asynchronously (in production, you might want to use a queue)
-    processStripeWebhookEvent(event).catch((err) => {
-      console.error("Error processing webhook event:", err);
+    processStripeWebhookEvent(event, logger).catch((err) => {
+      logger.error({ err }, "stripe_webhook.process_failed");
     });
 
     return { received: true };
@@ -548,12 +563,12 @@ export const stripeWebhook = new Elysia({ name: "stripe-webhook" })
 /**
  * Process Stripe webhook event
  */
-async function processStripeWebhookEvent(event: any): Promise<void> {
+async function processStripeWebhookEvent(event: any, logger: Logger): Promise<void> {
   try {
     if (event.type === "checkout.session.completed") {
-      await handleStripeCheckoutSessionCompleted(event);
+      await handleStripeCheckoutSessionCompleted(event, logger);
     } else if (event.type === "charge.refunded") {
-      await handleStripeChargeRefunded(event);
+      await handleStripeChargeRefunded(event, logger);
     }
 
     // Mark as processed
@@ -578,6 +593,7 @@ async function processStripeWebhookEvent(event: any): Promise<void> {
  */
 async function handleStripeCheckoutSessionCompleted(
   event: any,
+  logger: Logger,
 ): Promise<void> {
   const session = event.data.object;
 
@@ -598,7 +614,7 @@ async function handleStripeCheckoutSessionCompleted(
 
   // Idempotency check: if already paid, skip
   if (order.status === "paid") {
-    console.log(`Order ${orderId} already paid, skipping fulfillment`);
+    logger.info({ orderId }, "stripe_webhook.order_already_paid");
     return;
   }
 
@@ -609,12 +625,12 @@ async function handleStripeCheckoutSessionCompleted(
   const stripeAmountTotal = session.amount_total ?? 0;
   const actualStripeAmount = stripeAmountTotal / 100; // Divide by 100 to compensate for SDK bug
   
-  console.log("[Webhook] Amount reconciliation:", {
+  logger.info({
     stripeAmountTotal,
     actualStripeAmount,
     orderTotalCents: order.totalCents,
     currency: order.currency,
-  });
+  }, "stripe_webhook.amount_reconciliation");
   
   if (Math.abs(actualStripeAmount - order.totalCents) > 0.01) {
     // Amount mismatch - mark as failed
@@ -666,7 +682,7 @@ async function handleStripeCheckoutSessionCompleted(
       .limit(1);
 
     if (!userRow) {
-      console.error(`[Billingo] User ${userId} not found for invoice creation`);
+      logger.error({ userId, orderId }, "billingo.user_missing");
     } else {
       const [billing] = await db
         .select()
@@ -720,23 +736,23 @@ async function handleStripeCheckoutSessionCompleted(
         billingoInvoiceId,
       });
 
-      console.log(`[Billingo] Invoice created for order ${orderId}: ${billingoInvoiceId}`);
+      logger.info({ orderId, billingoInvoiceId }, "billingo.invoice_created");
     }
   } catch (error: any) {
     // Log error but don't fail the webhook - invoice creation is not critical
-    console.error(`[Billingo] Failed to create invoice for order ${orderId}:`, error.message);
+    logger.error({ err: error, orderId }, "billingo.invoice_failed");
   }
 }
 
 /**
  * Handle Stripe charge.refunded event
  */
-async function handleStripeChargeRefunded(event: any): Promise<void> {
+async function handleStripeChargeRefunded(event: any, logger: Logger): Promise<void> {
   const charge = event.data.object;
 
   // Find order by payment intent or charge
   // This is simplified - in production you'd want to store charge_id in payments table
-  console.log("Charge refunded:", charge.id);
+  logger.info({ chargeId: charge.id }, "stripe_webhook.charge_refunded");
   // TODO: Implement refund logic
   // - Find order by charge/payment_intent
   // - Mark order as refunded
@@ -761,10 +777,12 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
   })
   // Handle GET requests (Barion callback with paymentId query parameter)
   .get("/barion/webhook", async ({ request, query, set }) => {
-    console.log("[Barion Webhook] Received GET request");
-    console.log("[Barion Webhook] Request URL:", request.url);
-    console.log("[Barion Webhook] Query params:", query);
-    
+    const requestId = request.headers.get("x-request-id") ?? randomUUID();
+    set.headers["x-request-id"] = requestId;
+    const logger = getLogger().child({ requestId });
+    const path = new URL(request.url).pathname;
+    logger.info({ method: request.method, path }, "barion_webhook.received");
+
     const paymentId = query.paymentId as string | undefined;
     
     if (!paymentId) {
@@ -772,20 +790,26 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
       return { error: "Missing paymentId query parameter" };
     }
 
-    console.log("[Barion Webhook] Processing GET callback for paymentId:", paymentId);
+    logger.info({ paymentId }, "barion_webhook.processing");
 
     // Get Barion provider to fetch payment state
     const barionProvider = getPaymentProviderByType("barion");
     
     try {
       // Fetch payment state from Barion API
+      if (!barionProvider.getPaymentState) {
+        throw new Error("Barion provider does not support getPaymentState");
+      }
       const paymentState = await barionProvider.getPaymentState(paymentId);
       
-      console.log("[Barion Webhook] Payment state:", {
-        paymentId,
-        status: paymentState.Status,
-        transactions: paymentState.Transactions?.length || 0,
-      });
+      logger.info(
+        {
+          paymentId,
+          status: paymentState.Status,
+          transactions: paymentState.Transactions?.length || 0,
+        },
+        "barion_webhook.payment_state",
+      );
 
       // Create a webhook event-like object from the payment state
       const event = {
@@ -809,36 +833,45 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
       } catch (err: any) {
         // If duplicate, that's okay (idempotency)
         if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
-          console.error("Failed to store barion event:", err);
+          logger.error({ err }, "barion_webhook.store_failed");
         }
       }
 
       // Process event asynchronously
-      processBarionWebhookEvent(event).catch((err) => {
-        console.error("Error processing barion webhook event:", err);
+      processBarionWebhookEvent(event, logger).catch((err) => {
+        logger.error({ err }, "barion_webhook.process_failed");
       });
 
       return { received: true, paymentId, status: paymentState.Status };
     } catch (error: any) {
-      console.error("[Barion Webhook] Error processing GET callback:", error);
+      logger.error({ err: error, paymentId }, "barion_webhook.get_failed");
       set.status = 500;
       return { error: error.message || "Failed to process callback" };
     }
   })
   // Handle POST requests (Barion webhook with JSON body and signature)
   .post("/barion/webhook", async ({ request, set }) => {
-    console.log("[Barion Webhook] Received POST request");
-    console.log("[Barion Webhook] Request URL:", request.url);
-    console.log("[Barion Webhook] Request headers:", Object.fromEntries(request.headers.entries()));
-    
+    const requestId = request.headers.get("x-request-id") ?? randomUUID();
+    set.headers["x-request-id"] = requestId;
+    const logger = getLogger().child({ requestId });
+    const path = new URL(request.url).pathname;
+    logger.info(
+      {
+        method: request.method,
+        path,
+        contentLength: request.headers.get("content-length") ?? undefined,
+        hasSignature: Boolean(request.headers.get("x-barion-signature")),
+      },
+      "barion_webhook.received",
+    );
+
     // Get raw body for signature verification
     let rawBody: string;
     try {
       rawBody = await request.text();
-      console.log("[Barion Webhook] Raw body length:", rawBody.length);
-      console.log("[Barion Webhook] Raw body:", rawBody.substring(0, 500));
+      logger.info({ rawBodyLength: rawBody.length }, "barion_webhook.body_read");
     } catch (error: any) {
-      console.error("[Barion Webhook] Error reading raw body:", error);
+      logger.error({ err: error }, "barion_webhook.body_read_failed");
       set.status = 400;
       return { error: "Failed to read request body" };
     }
@@ -853,9 +886,9 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
       let event;
       try {
         event = await barionProvider.verifyWebhookSignature(rawBody, signature);
-        console.log("[Barion Webhook] Signature verified, event type:", event.type);
+        logger.info({ eventType: event.type }, "barion_webhook.verified");
       } catch (err: any) {
-        console.error("Webhook signature verification failed:", err);
+        logger.error({ err }, "barion_webhook.verify_failed");
         set.status = 400;
         return { error: err.message };
       }
@@ -873,20 +906,20 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
       } catch (err: any) {
         // If duplicate, that's okay (idempotency)
         if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
-          console.error("Failed to store barion event:", err);
+          logger.error({ err }, "barion_webhook.store_failed");
         }
       }
 
       // Acknowledge quickly
       // Process events asynchronously
-      processBarionWebhookEvent(event).catch((err) => {
-        console.error("Error processing barion webhook event:", err);
+      processBarionWebhookEvent(event, logger).catch((err) => {
+        logger.error({ err }, "barion_webhook.process_failed");
       });
 
       return { received: true };
     } else {
       // No signature - try to parse payload (can be JSON or URL-encoded)
-      console.log("[Barion Webhook] No signature header, processing payload");
+      logger.info("barion_webhook.no_signature");
       try {
         let paymentId: string | undefined;
         let payloadData: any;
@@ -897,7 +930,7 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
           paymentId = payloadData.PaymentId || payloadData.paymentId;
         } catch {
           // If not JSON, try URL-encoded format (PaymentId=...)
-          console.log("[Barion Webhook] Not JSON, trying URL-encoded format");
+          logger.info("barion_webhook.non_json_payload");
           const urlParams = new URLSearchParams(rawBody);
           paymentId = urlParams.get("PaymentId") || urlParams.get("paymentId") || undefined;
           
@@ -913,15 +946,18 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
         }
         
         if (!paymentId) {
-          console.error("[Barion Webhook] Could not extract PaymentId from payload:", rawBody);
+          logger.error({ rawBodyLength: rawBody.length }, "barion_webhook.payment_id_missing");
           set.status = 400;
           return { error: "Missing PaymentId in payload" };
         }
 
-        console.log("[Barion Webhook] Extracted paymentId:", paymentId);
+        logger.info({ paymentId }, "barion_webhook.payment_id_extracted");
 
         // Fetch payment state from Barion API to verify
         const barionProvider = getPaymentProviderByType("barion");
+        if (!barionProvider.getPaymentState) {
+          throw new Error("Barion provider does not support getPaymentState");
+        }
         const paymentState = await barionProvider.getPaymentState(paymentId);
 
         const event = {
@@ -944,18 +980,18 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
           });
         } catch (err: any) {
           if (!err.message?.includes("unique") && !err.message?.includes("duplicate")) {
-            console.error("Failed to store barion event:", err);
+            logger.error({ err }, "barion_webhook.store_failed");
           }
         }
 
         // Process event
-        processBarionWebhookEvent(event).catch((err) => {
-          console.error("Error processing barion webhook event:", err);
+        processBarionWebhookEvent(event, logger).catch((err) => {
+          logger.error({ err }, "barion_webhook.process_failed");
         });
 
         return { received: true, paymentId };
       } catch (error: any) {
-        console.error("[Barion Webhook] Error parsing POST payload:", error);
+        logger.error({ err: error }, "barion_webhook.payload_parse_failed");
         set.status = 400;
         return { error: `Failed to process payload: ${error.message}` };
       }
@@ -965,21 +1001,24 @@ export const barionWebhook = new Elysia({ name: "barion-webhook" })
 /**
  * Process Barion webhook event
  */
-async function processBarionWebhookEvent(event: any): Promise<void> {
+async function processBarionWebhookEvent(event: any, logger: Logger): Promise<void> {
   try {
     const status = normalizeBarionStatus(event.data?.Status);
 
     // Barion sends payment state updates
     if (BARION_SUCCESS_STATUSES.has(status)) {
-      await handleBarionPaymentCompleted(event);
+      await handleBarionPaymentCompleted(event, logger);
     } else if (BARION_CANCELLED_STATUSES.has(status) || BARION_FAILED_STATUSES.has(status)) {
-      await handleBarionPaymentFailed(event, status);
+      await handleBarionPaymentFailed(event, status, logger);
     } else {
       // Prepared/Started/other transitional states: no-op
-      console.log("[Barion Webhook] Payment state received (no action):", {
-        paymentId: event.id,
-        status: event.data?.Status,
-      });
+      logger.info(
+        {
+          paymentId: event.id,
+          status: event.data?.Status,
+        },
+        "barion_webhook.no_action",
+      );
     }
 
     // Mark as processed
@@ -1002,7 +1041,7 @@ async function processBarionWebhookEvent(event: any): Promise<void> {
 /**
  * Handle Barion payment failed/canceled/expired event
  */
-async function handleBarionPaymentFailed(event: any, status: string): Promise<void> {
+async function handleBarionPaymentFailed(event: any, status: string, logger: Logger): Promise<void> {
   const paymentData = event.data;
   const paymentId = paymentData.PaymentId;
   const paymentRequestId = paymentData.PaymentRequestId || paymentData.OrderNumber;
@@ -1021,7 +1060,7 @@ async function handleBarionPaymentFailed(event: any, status: string): Promise<vo
 
   // If already paid/refunded, do not override
   if (order.status === "paid" || order.status === "refunded") {
-    console.log(`[Barion Webhook] Order ${orderId} already ${order.status}, skipping failure update`);
+    logger.info({ orderId, status: order.status }, "barion_webhook.order_already_settled");
     return;
   }
 
@@ -1046,18 +1085,22 @@ async function handleBarionPaymentFailed(event: any, status: string): Promise<vo
     failureMessage: failure?.Description || failure?.Title || "Barion payment failed",
   });
 
-  console.log("[Barion Webhook] Payment marked as failed:", {
-    orderId,
-    paymentId,
-    status,
-    orderStatus: nextStatus,
-  });
+  logger.info(
+    {
+      orderId,
+      paymentId,
+      paymentRequestId,
+      nextStatus,
+    },
+    "barion_webhook.payment_failed",
+  );
+
 }
 
 /**
  * Handle Barion payment completed event
  */
-async function handleBarionPaymentCompleted(event: any): Promise<void> {
+async function handleBarionPaymentCompleted(event: any, logger: Logger): Promise<void> {
   const paymentData = event.data;
   const paymentId = paymentData.PaymentId;
   const paymentRequestId = paymentData.PaymentRequestId || paymentData.OrderNumber;
@@ -1079,7 +1122,7 @@ async function handleBarionPaymentCompleted(event: any): Promise<void> {
 
   // Idempotency check: if already paid, skip
   if (order.status === "paid") {
-    console.log(`Order ${orderId} already paid, skipping fulfillment`);
+    logger.info({ orderId }, "barion_webhook.order_already_paid");
     return;
   }
 
@@ -1087,11 +1130,11 @@ async function handleBarionPaymentCompleted(event: any): Promise<void> {
   const transaction = paymentData.Transactions?.[0];
   if (transaction) {
     const barionAmount = transaction.Total || 0;
-    console.log("[Barion Webhook] Amount reconciliation:", {
+    logger.info({
       barionAmount,
       orderTotalCents: order.totalCents,
       currency: order.currency,
-    });
+    }, "barion_webhook.amount_reconciliation");
 
     if (Math.abs(barionAmount - order.totalCents) > 0.01) {
       // Amount mismatch - mark as failed
@@ -1144,7 +1187,7 @@ async function handleBarionPaymentCompleted(event: any): Promise<void> {
       .limit(1);
 
     if (!userRow) {
-      console.error(`[Billingo] User ${order.userId} not found for invoice creation`);
+      logger.error({ userId: order.userId, orderId }, "billingo.user_missing");
     } else {
       const [billing] = await db
         .select()
@@ -1198,10 +1241,10 @@ async function handleBarionPaymentCompleted(event: any): Promise<void> {
         billingoInvoiceId,
       });
 
-      console.log(`[Billingo] Invoice created for order ${orderId}: ${billingoInvoiceId}`);
+      logger.info({ orderId, billingoInvoiceId }, "billingo.invoice_created");
     }
   } catch (error: any) {
     // Log error but don't fail the webhook - invoice creation is not critical
-    console.error(`[Billingo] Failed to create invoice for order ${orderId}:`, error.message);
+    logger.error({ err: error, orderId }, "billingo.invoice_failed");
   }
 }

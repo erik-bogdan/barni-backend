@@ -47,6 +47,7 @@
     "node-addon-api": "^7.1.1",
     "nodemailer": "^7.0.6",
     "openai": "^5.12.2",
+    "pino": "^9.9.0",
     "postgres": "^3.4.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -58,6 +59,7 @@
     "@types/node": "^24.6.0",
     "@types/pg": "^8.15.5",
     "bun-types": "^1.2.23",
+    "pino-pretty": "^11.3.0",
     "react-email": "^4.2.12",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2"

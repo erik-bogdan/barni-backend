@@ -1,5 +1,6 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
+import { getLogger } from "../lib/logger"
 
 function requireEnv(key: string): string {
   const value = process.env[key]
@@ -31,17 +32,44 @@ export async function uploadBuffer(params: {
   contentType: string
   cacheControl?: string
 }) {
+  const logger = getLogger()
   const bucket = requireEnv("S3_BUCKET")
   const client = getS3Client()
-  await client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: params.key,
-      Body: params.body,
-      ContentType: params.contentType,
-      CacheControl: params.cacheControl,
-    }),
-  )
+  const start = Date.now()
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: params.key,
+        Body: params.body,
+        ContentType: params.contentType,
+        CacheControl: params.cacheControl,
+      }),
+    )
+    const durationMs = Date.now() - start
+    logger.info(
+      {
+        bucket,
+        key: params.key,
+        bytes: params.body.length,
+        durationMs,
+      },
+      "s3.uploaded",
+    )
+  } catch (error) {
+    const durationMs = Date.now() - start
+    logger.error(
+      {
+        bucket,
+        key: params.key,
+        bytes: params.body.length,
+        durationMs,
+        err: error,
+      },
+      "s3.upload_failed",
+    )
+    throw error
+  }
 }
 
 export function buildPublicUrl(key: string): string {

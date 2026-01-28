@@ -1,12 +1,16 @@
 import { auth } from "../lib/auth"; // ugyanaz a better-auth instance
 import { db } from "../lib/db";
+import { createLogger, setLogger } from "../lib/logger";
+
+const logger = createLogger("backend");
+setLogger(logger);
 
 async function main() {
   const email = process.argv[2];
   const password = process.argv[3];
 
   if (!email || !password) {
-    console.error("Usage: bun create-user.ts <email> <password>");
+    logger.error("Usage: bun create-user.ts <email> <password>");
     process.exit(1);
   }
 
@@ -25,11 +29,11 @@ async function main() {
     },
   });
 
-  console.log("User created:", user.user.id, user.user.email);
+  logger.info({ userId: user.user.id, email: user.user.email }, "user.created");
   process.exit(0);
 }
 
 main().catch(err => {
-  console.error(err);
+  logger.error({ err }, "user.create_failed");
   process.exit(1);
 });

@@ -3,6 +3,7 @@ import { env } from '../env'
 import { db } from './db'
 import { stripeCustomers, user } from '../../packages/db/src/schema'
 import { eq } from 'drizzle-orm'
+import { getLogger } from './logger'
 
 export const stripe = new Stripe(env.STRIPE_SECRET_KEY, { 
   apiVersion: '2025-12-15.clover' 
@@ -19,7 +20,10 @@ export async function ensureCustomer(userId: string, email: string): Promise<str
     } catch (error: any) {
       // Customer doesn't exist in Stripe (deleted or wrong account)
       // Delete from DB and create a new one
-      console.warn(`[Stripe] Customer ${row.customerId} not found in Stripe, creating new one:`, error.message)
+      getLogger().warn(
+        { customerId: row.customerId, error: error.message },
+        "stripe.customer_missing_recreating",
+      )
       await db.delete(stripeCustomers).where(eq(stripeCustomers.userId, userId))
     }
   }
@@ -75,7 +79,10 @@ export async function createCheckoutSession(
   // Ensure currency is lowercase and valid
   const stripeCurrency = currency.toLowerCase();
   if (stripeCurrency !== 'huf') {
-    console.warn(`[Stripe Checkout] Unexpected currency: ${stripeCurrency}, expected 'huf'`);
+    getLogger().warn(
+      { currency: stripeCurrency, expected: 'huf' },
+      "stripe.checkout.unexpected_currency",
+    );
   }
 
   // For HUF: unit_amount is in the smallest currency unit
@@ -101,7 +108,7 @@ export async function createCheckoutSession(
     : stripeUnitAmount;
 
   // Log for debugging
-  console.log("[Stripe Checkout] Creating session with:", {
+  getLogger().info({
     orderId,
     totalCents,
     stripeUnitAmount,
@@ -112,7 +119,7 @@ export async function createCheckoutSession(
     note: stripeCurrency === 'huf' 
       ? "WORKAROUND: Multiplying by 100 to compensate for Stripe SDK bug"
       : "For non-HUF, unit_amount should equal totalCents",
-  });
+  }, "stripe.checkout.create_session");
 
   // CRITICAL: For HUF (zero-decimal currency), unit_amount must be an integer
   // representing the amount in the smallest currency unit (which is 1 Ft for HUF)
@@ -157,7 +164,7 @@ export async function createCheckoutSession(
 
   // CRITICAL DEBUG: Log the exact values being sent to Stripe
   const firstLineItem = sessionParams.line_items?.[0];
-  console.log("[Stripe Checkout] DEBUG - Exact values being sent:", {
+  getLogger().info({
     orderId,
     totalCents,
     stripeUnitAmount,
@@ -170,41 +177,44 @@ export async function createCheckoutSession(
     note: stripeCurrency === 'huf' 
       ? "WORKAROUND: Sending unit_amount * 100 to compensate for Stripe SDK bug"
       : "Normal handling for non-HUF currencies",
-  });
+  }, "stripe.checkout.session_payload");
 
   try {
     const session = await stripe.checkout.sessions.create(sessionParams, {
       idempotencyKey: `checkout_create:${orderId}`,
     });
 
-    console.log("[Stripe Checkout] Session created successfully:", {
+    getLogger().info({
       sessionId: session.id,
       amountTotal: session.amount_total,
       currency: session.currency,
       url: session.url,
-    });
+    }, "stripe.checkout.session_created");
 
     return session;
   } catch (error: any) {
-    console.error("[Stripe Checkout] Error creating session:", {
-      error: error.message,
-      code: error.code,
-      type: error.type,
-      orderId,
-      totalCents,
-      stripeUnitAmount,
-      currency: stripeCurrency,
-      sessionParams: {
-        mode: sessionParams.mode,
-        line_items: sessionParams.line_items?.map(item => ({
-          unit_amount: (item as any).price_data?.unit_amount,
-          currency: (item as any).price_data?.currency,
-          quantity: item.quantity,
-        })),
+    getLogger().error(
+      {
+        err: error,
+        code: error.code,
+        type: error.type,
+        orderId,
+        totalCents,
+        stripeUnitAmount,
+        currency: stripeCurrency,
+        sessionParams: {
+          mode: sessionParams.mode,
+          line_items: sessionParams.line_items?.map(item => ({
+            unit_amount: (item as any).price_data?.unit_amount,
+            currency: (item as any).price_data?.currency,
+            quantity: item.quantity,
+          })),
+        },
+        // Log the full line item for debugging
+        fullLineItem: sessionParams.line_items?.[0] ? JSON.stringify(sessionParams.line_items[0], null, 2) : null,
       },
-      // Log the full line item for debugging
-      fullLineItem: sessionParams.line_items?.[0] ? JSON.stringify(sessionParams.line_items[0], null, 2) : null,
-    });
+      "stripe.checkout.session_failed",
+    );
     throw error;
   }
 }
