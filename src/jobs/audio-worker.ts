@@ -8,6 +8,7 @@ import {
   processFreeStoryAudioJob,
   refundAudioFailureOnce,
 } from "../services/audio"
+import { calcAudioCost } from "../services/credits"
 import { buildPublicUrl, uploadBuffer } from "../services/s3"
 import { AUDIO_QUEUE } from "./audio-queue"
 import { createCoverRepo, processCoverJob, createFreeStoryCoverRepo, processFreeStoryCoverJob } from "../services/cover/coverService"
@@ -157,10 +158,15 @@ async function startAudioWorker() {
       if (payload?.storyId && payload.userId && payload.userId !== "" && payload.jobType !== "cover.generate") {
         try {
           const story = await audioRepo.getStoryById(payload.storyId)
+          const fallbackAmount =
+            story?.length
+              ? await calcAudioCost(story.length as "short" | "medium" | "long", db)
+              : undefined
           await refundAudioFailureOnce(db, {
             userId: payload.userId,
             storyId: payload.storyId,
             length: story?.length,
+            fallbackAmount,
           })
         } catch (refundErr) {
           console.error("[audio-worker] failed to refund on final failure", refundErr)

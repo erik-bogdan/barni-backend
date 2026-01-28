@@ -12,6 +12,7 @@ import { dash } from "./routes/dash"
 import { feedbackApi } from "./routes/feedback"
 import { invitationsApi, invitationsAdminApi, preRegistrationApi, preRegistrationAdminApi } from "./routes/invitations"
 import { launchSubscriptionsApi, launchSubscriptionsAdminApi } from "./routes/launch-subscriptions"
+import { notificationsApi } from "./routes/notifications"
 
 const app = new Elysia()
   .use(cors({
@@ -42,6 +43,7 @@ const app = new Elysia()
   .use(storiesApi)
   .use(paymentsApi)
   .use(feedbackApi)
+  .use(notificationsApi)
   .use(invitationsApi)
   .use(invitationsAdminApi)
   .use(preRegistrationApi)

@@ -190,6 +190,13 @@
       "when": 1769420317847,
       "tag": "0026_stiff_colleen_wing",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1769598591251,
+      "tag": "0027_burly_doctor_doom",
+      "breakpoints": true
     }
   ]
 }

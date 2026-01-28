@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia"
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../lib/db"
 import { auth } from "../lib/auth"
@@ -12,6 +12,7 @@ import {
   children,
   storyCreditTransactions,
   audioStarTransactions,
+  stories,
   themeCategories,
   themes,
   user,
@@ -170,6 +171,190 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
       audioStarBalance: audioStarRow?.balance ?? 0,
     }
   })
+  .get(
+    "/transactions",
+    async ({ request, query, set }) => {
+      const session = await requireSession(request.headers, set)
+      if (!session) return { error: "Unauthorized" }
+
+      const page = Math.max(1, parseInt(query.page || "1", 10))
+      const limit = Math.min(100, Math.max(5, parseInt(query.limit || "20", 10)))
+      const offset = (page - 1) * limit
+      const kind = query.kind ?? "all"
+      const fetchCount = page * limit
+
+      const [{ creditTotal }] = await db
+        .select({ creditTotal: sql<number>`COUNT(*)::int` })
+        .from(storyCreditTransactions)
+        .where(eq(storyCreditTransactions.userId, session.user.id))
+
+      const [{ audioTotal }] = await db
+        .select({ audioTotal: sql<number>`COUNT(*)::int` })
+        .from(audioStarTransactions)
+        .where(eq(audioStarTransactions.userId, session.user.id))
+
+      if (kind === "credits") {
+        const creditRows = await db
+          .select({
+            id: storyCreditTransactions.id,
+            type: storyCreditTransactions.type,
+            amount: storyCreditTransactions.amount,
+            reason: storyCreditTransactions.reason,
+            source: storyCreditTransactions.source,
+            createdAt: storyCreditTransactions.createdAt,
+            storyId: storyCreditTransactions.storyId,
+            orderId: storyCreditTransactions.orderId,
+            storyTitle: stories.title,
+          })
+          .from(storyCreditTransactions)
+          .leftJoin(stories, eq(storyCreditTransactions.storyId, stories.id))
+          .where(eq(storyCreditTransactions.userId, session.user.id))
+          .orderBy(desc(storyCreditTransactions.createdAt))
+          .limit(limit)
+          .offset(offset)
+
+        return {
+          items: creditRows.map((row) => ({
+            id: String(row.id),
+            kind: "credits",
+            type: row.type,
+            amount: row.amount,
+            reason: row.reason,
+            source: row.source,
+            createdAt: row.createdAt,
+            storyId: row.storyId,
+            orderId: row.orderId,
+            storyTitle: row.storyTitle,
+          })),
+          total: creditTotal ?? 0,
+          page,
+          limit,
+          totalPages: Math.ceil((creditTotal ?? 0) / limit),
+        }
+      }
+
+      if (kind === "audio") {
+        const audioRows = await db
+          .select({
+            id: audioStarTransactions.id,
+            type: audioStarTransactions.type,
+            amount: audioStarTransactions.amount,
+            reason: audioStarTransactions.reason,
+            source: audioStarTransactions.source,
+            createdAt: audioStarTransactions.createdAt,
+            storyId: audioStarTransactions.storyId,
+            orderId: audioStarTransactions.orderId,
+            storyTitle: stories.title,
+          })
+          .from(audioStarTransactions)
+          .leftJoin(stories, eq(audioStarTransactions.storyId, stories.id))
+          .where(eq(audioStarTransactions.userId, session.user.id))
+          .orderBy(desc(audioStarTransactions.createdAt))
+          .limit(limit)
+          .offset(offset)
+
+        return {
+          items: audioRows.map((row) => ({
+            id: String(row.id),
+            kind: "audio_stars",
+            type: row.type,
+            amount: row.amount,
+            reason: row.reason,
+            source: row.source,
+            createdAt: row.createdAt,
+            storyId: row.storyId,
+            orderId: row.orderId,
+            storyTitle: row.storyTitle,
+          })),
+          total: audioTotal ?? 0,
+          page,
+          limit,
+          totalPages: Math.ceil((audioTotal ?? 0) / limit),
+        }
+      }
+
+      const creditRows = await db
+        .select({
+          id: storyCreditTransactions.id,
+          type: storyCreditTransactions.type,
+          amount: storyCreditTransactions.amount,
+          reason: storyCreditTransactions.reason,
+          source: storyCreditTransactions.source,
+          createdAt: storyCreditTransactions.createdAt,
+          storyId: storyCreditTransactions.storyId,
+          orderId: storyCreditTransactions.orderId,
+          storyTitle: stories.title,
+        })
+        .from(storyCreditTransactions)
+        .leftJoin(stories, eq(storyCreditTransactions.storyId, stories.id))
+        .where(eq(storyCreditTransactions.userId, session.user.id))
+        .orderBy(desc(storyCreditTransactions.createdAt))
+        .limit(fetchCount)
+
+      const audioRows = await db
+        .select({
+          id: audioStarTransactions.id,
+          type: audioStarTransactions.type,
+          amount: audioStarTransactions.amount,
+          reason: audioStarTransactions.reason,
+          source: audioStarTransactions.source,
+          createdAt: audioStarTransactions.createdAt,
+          storyId: audioStarTransactions.storyId,
+          orderId: audioStarTransactions.orderId,
+          storyTitle: stories.title,
+        })
+        .from(audioStarTransactions)
+        .leftJoin(stories, eq(audioStarTransactions.storyId, stories.id))
+        .where(eq(audioStarTransactions.userId, session.user.id))
+        .orderBy(desc(audioStarTransactions.createdAt))
+        .limit(fetchCount)
+
+      const combined = [
+        ...creditRows.map((row) => ({
+          id: String(row.id),
+          kind: "credits" as const,
+          type: row.type,
+          amount: row.amount,
+          reason: row.reason,
+          source: row.source,
+          createdAt: row.createdAt,
+          storyId: row.storyId,
+          orderId: row.orderId,
+          storyTitle: row.storyTitle,
+        })),
+        ...audioRows.map((row) => ({
+          id: String(row.id),
+          kind: "audio_stars" as const,
+          type: row.type,
+          amount: row.amount,
+          reason: row.reason,
+          source: row.source,
+          createdAt: row.createdAt,
+          storyId: row.storyId,
+          orderId: row.orderId,
+          storyTitle: row.storyTitle,
+        })),
+      ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+
+      const items = combined.slice(offset, offset + limit)
+      const total = (creditTotal ?? 0) + (audioTotal ?? 0)
+
+      return {
+        items,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      }
+    },
+    {
+      query: t.Object({
+        page: t.Optional(t.String()),
+        limit: t.Optional(t.String()),
+        kind: t.Optional(t.Union([t.Literal("all"), t.Literal("credits"), t.Literal("audio")])),
+      }),
+    },
+  )
   .get("/children/:childId", async ({ request, params, set }) => {
     const session = await requireSession(request.headers, set)
     if (!session) return { error: "Unauthorized" }
