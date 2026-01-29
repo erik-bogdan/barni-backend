@@ -7,8 +7,8 @@ import { betterAuthMiddleware } from '../plugins/auth/middleware'
 import { requireRole } from '../plugins/auth/requireRole'
 import { user, stories, orders, pricingPlans, coupons, orderItems, storyTransactions, storyCreditTransactions, audioStarTransactions, children, stripeEvents, payments, storyFeedback, freeStories, storyPricing, feedbacks, feedbackReplies } from '../../packages/db/src/schema'
 import { calculateGPTCost, calculateAudioCost } from '../services/gpt-cost'
-import { getPresignedUrl } from '../services/s3'
-import { buildCoverKey, buildCoverSquareKey, processFreeStoryCoverJob, buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from '../services/cover/coverService'
+import { extractKeyFromPublicUrl, getPresignedUrl } from '../services/s3'
+import { buildCoverKey, buildCoverSquareKey, processFreeStoryCoverJob, processFreeStoryCoverUpload, buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from '../services/cover/coverService'
 import { buildAudioKey, buildFreeStoryAudioKey } from '../services/audio'
 import { enqueueCoverJob } from '../jobs/cover-queue'
 import { enqueueAudioJob } from '../jobs/audio-queue'
@@ -1558,8 +1558,10 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         // Generate presigned URL for main cover if it exists
         if (coverUrl) {
           try {
-            const coverKey = buildFreeStoryCoverKey(story.id)
-            coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+            const coverKey = extractKeyFromPublicUrl(coverUrl)
+            if (coverKey) {
+              coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+            }
           } catch (error) {
             logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
             // Fallback to original URL
@@ -1569,8 +1571,10 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         // Generate presigned URL for square cover if it exists
         if (coverSquareUrl) {
           try {
-            const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
-            coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+            const coverSquareKey = extractKeyFromPublicUrl(coverSquareUrl)
+            if (coverSquareKey) {
+              coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+            }
           } catch (error) {
             logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
             // Fallback to original URL
@@ -1605,8 +1609,10 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     // Generate presigned URL for main cover if it exists
     if (coverUrl) {
       try {
-        const coverKey = buildFreeStoryCoverKey(story.id)
-        coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+        const coverKey = extractKeyFromPublicUrl(coverUrl)
+        if (coverKey) {
+          coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+        }
       } catch (error) {
         logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
         // Fallback to original URL
@@ -1616,8 +1622,10 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     // Generate presigned URL for square cover if it exists
     if (coverSquareUrl) {
       try {
-        const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
-        coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+        const coverSquareKey = extractKeyFromPublicUrl(coverSquareUrl)
+        if (coverSquareKey) {
+          coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+        }
       } catch (error) {
         logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
         // Fallback to original URL
@@ -1748,6 +1756,39 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
     }
 
     return { success: true }
+  })
+  .post('/free-stories/:id/upload-cover', async ({ params, request, set }) => {
+    const formData = await request.formData()
+    const file = formData.get('file')
+
+    if (!file || !(file instanceof File)) {
+      set.status = 400
+      return { error: 'Missing file' }
+    }
+
+    if (!file.type.startsWith('image/')) {
+      set.status = 400
+      return { error: 'Invalid file type' }
+    }
+
+    const maxBytes = 10 * 1024 * 1024
+    if (file.size > maxBytes) {
+      set.status = 400
+      return { error: 'File too large (max 10MB)' }
+    }
+
+    try {
+      const buffer = Buffer.from(await file.arrayBuffer())
+      await processFreeStoryCoverUpload({ storyId: params.id, image: buffer })
+      return { success: true, message: 'Cover uploaded' }
+    } catch (error) {
+      if (error instanceof Error && error.message.toLowerCase().includes('not found')) {
+        set.status = 404
+        return { error: 'Story not found' }
+      }
+      set.status = 500
+      return { error: 'Failed to upload cover' }
+    }
   })
   .post('/free-stories/:id/generate-cover', async ({ params, set }) => {
     const [story] = await db

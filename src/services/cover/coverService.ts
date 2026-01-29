@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm"
+import { randomUUID } from "node:crypto"
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js"
 
 import { stories, freeStories } from "../../../packages/db/src/schema"
 import { db } from "../../lib/db"
 import { buildPublicUrl, uploadBuffer } from "../s3"
-import { generateCoverWebp, type Mood, type Theme, type Length } from "./generateCover"
+import { generateCoverWebp, generateCoverWebpFromImage, type Mood, type Theme, type Length } from "./generateCover"
 import { getLogger } from "../../lib/logger"
 
 export type CoverStoryRow = {
@@ -129,7 +130,12 @@ export async function processFreeStoryCoverJob(
   }
 
   if (!story.title) {
-    await repo.updateCover(story.id, { coverUrl: null, coverSquareUrl: null, coverStatus: "failed", coverError: "No title" })
+    await repo.updateCover(story.id, {
+      coverUrl: story.coverUrl,
+      coverSquareUrl: story.coverSquareUrl,
+      coverStatus: "failed",
+      coverError: "No title",
+    })
     return
   }
 
@@ -180,6 +186,74 @@ export async function processFreeStoryCoverJob(
 }
 
 const COVER_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+export async function processFreeStoryCoverUpload(
+  params: { storyId: string; image: Buffer },
+  deps?: {
+    repo?: FreeStoryCoverRepo
+    s3?: { uploadBuffer: typeof uploadBuffer; buildPublicUrl: typeof buildPublicUrl }
+    db?: typeof db
+  },
+): Promise<void> {
+  const logger = getLogger()
+  const repo = deps?.repo ?? createFreeStoryCoverRepo(db)
+  const s3Client = deps?.s3 ?? { uploadBuffer, buildPublicUrl }
+
+  const story = await repo.getStoryById(params.storyId)
+
+  if (!story) {
+    throw new Error("Free story not found")
+  }
+
+  if (!story.title) {
+    await repo.updateCover(story.id, { coverUrl: null, coverSquareUrl: null, coverStatus: "failed", coverError: "No title" })
+    return
+  }
+
+  try {
+    await repo.updateCover(story.id, { coverStatus: "generating", coverError: null })
+
+    const { cover, coverSquare } = await generateCoverWebpFromImage({
+      image: params.image,
+      title: story.title,
+      theme: story.theme as Theme,
+      mood: story.mood as Mood,
+      length: story.length as Length,
+    })
+
+    const uploadSuffix = randomUUID()
+    const coverKey = `free-stories/${story.id}/cover_${uploadSuffix}.webp`
+    await s3Client.uploadBuffer({
+      key: coverKey,
+      body: cover,
+      contentType: "image/webp",
+      cacheControl: COVER_CACHE_CONTROL,
+    })
+    const coverUrl = s3Client.buildPublicUrl(coverKey)
+
+    let coverSquareUrl: string | null = null
+    if (coverSquare) {
+      const coverSquareKey = `free-stories/${story.id}/cover_square_${uploadSuffix}.webp`
+      await s3Client.uploadBuffer({
+        key: coverSquareKey,
+        body: coverSquare,
+        contentType: "image/webp",
+        cacheControl: COVER_CACHE_CONTROL,
+      })
+      coverSquareUrl = s3Client.buildPublicUrl(coverSquareKey)
+    }
+
+    await repo.updateCover(story.id, { coverUrl, coverSquareUrl, coverStatus: "ready", coverError: null })
+  } catch (error) {
+    logger.error({ err: error, storyId: params.storyId }, "free_story.cover_upload_failed")
+    await repo.updateCover(story.id, {
+      coverUrl: story.coverUrl,
+      coverSquareUrl: story.coverSquareUrl,
+      coverStatus: "failed",
+      coverError: error instanceof Error ? error.message : "Unknown error",
+    })
+  }
+}
 
 export async function processCoverJob(
   params: { storyId: string },

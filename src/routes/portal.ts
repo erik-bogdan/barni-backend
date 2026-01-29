@@ -3,8 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../lib/db"
 import { auth } from "../lib/auth"
-import { getPresignedUrl } from "../services/s3"
-import { buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from "../services/cover/coverService"
+import { extractKeyFromPublicUrl, getPresignedUrl } from "../services/s3"
 import { buildFreeStoryAudioKey } from "../services/audio"
 import {
   billingAddresses,
@@ -631,8 +630,10 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         // Generate presigned URL for main cover if it exists
         if (coverUrl) {
           try {
-            const coverKey = buildFreeStoryCoverKey(story.id)
-            coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+            const coverKey = extractKeyFromPublicUrl(coverUrl)
+            if (coverKey) {
+              coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+            }
           } catch (error) {
             logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
             // Fallback to original URL
@@ -642,8 +643,10 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
         // Generate presigned URL for square cover if it exists
         if (coverSquareUrl) {
           try {
-            const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
-            coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+            const coverSquareKey = extractKeyFromPublicUrl(coverSquareUrl)
+            if (coverSquareKey) {
+              coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+            }
           } catch (error) {
             logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
             // Fallback to original URL
@@ -682,8 +685,10 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
     // Generate presigned URL for main cover if it exists
     if (coverUrl) {
       try {
-        const coverKey = buildFreeStoryCoverKey(story.id)
-        coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+        const coverKey = extractKeyFromPublicUrl(coverUrl)
+        if (coverKey) {
+          coverUrl = await getPresignedUrl(coverKey, 3600) // 1 hour expiry
+        }
       } catch (error) {
         logger.error({ err: error, storyId: story.id }, "cover.presign_failed")
         // Fallback to original URL
@@ -693,8 +698,10 @@ export const portal = new Elysia({ name: "portal", prefix: "/portal" })
     // Generate presigned URL for square cover if it exists
     if (coverSquareUrl) {
       try {
-        const coverSquareKey = buildFreeStoryCoverSquareKey(story.id)
-        coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+        const coverSquareKey = extractKeyFromPublicUrl(coverSquareUrl)
+        if (coverSquareKey) {
+          coverSquareUrl = await getPresignedUrl(coverSquareKey, 3600) // 1 hour expiry
+        }
       } catch (error) {
         logger.error({ err: error, storyId: story.id }, "cover_square.presign_failed")
         // Fallback to original URL

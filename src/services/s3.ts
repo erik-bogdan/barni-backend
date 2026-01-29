@@ -79,6 +79,20 @@ export function buildPublicUrl(key: string): string {
   return `${normalizeBaseUrl(base)}/${bucket}/${key}`
 }
 
+export function extractKeyFromPublicUrl(url: string): string | null {
+  try {
+    const bucket = requireEnv("S3_BUCKET")
+    const base = process.env.PUBLIC_ASSET_BASE_URL || process.env.S3_ENDPOINT
+    if (!base) return null
+    const normalizedBase = normalizeBaseUrl(base)
+    const prefix = `${normalizedBase}/${bucket}/`
+    if (!url.startsWith(prefix)) return null
+    return url.slice(prefix.length)
+  } catch {
+    return null
+  }
+}
+
 export async function getPresignedUrl(key: string, expiresIn: number = 3600): Promise<string> {
   const bucket = requireEnv("S3_BUCKET")
   const client = getS3Client()

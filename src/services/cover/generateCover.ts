@@ -352,3 +352,49 @@ export async function generateCoverWebp(input: GenerateCoverInput): Promise<Gene
 
   return { cover, coverSquare }
 }
+
+/**
+ * Generate cover images from a provided background image, adding title and badges.
+ */
+export async function generateCoverWebpFromImage(
+  input: GenerateCoverInput & { image: Buffer },
+): Promise<GenerateCoverOutput> {
+  const { title, theme, mood, length, image } = input
+
+  const background = await sharp(image)
+    .resize(COVER_WIDTH, COVER_HEIGHT, { fit: "cover" })
+    .toBuffer()
+
+  const overlaySvg = Buffer.from(
+    `<svg width="${COVER_WIDTH}" height="${COVER_HEIGHT}" viewBox="0 0 ${COVER_WIDTH} ${COVER_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="rgba(0,0,0,0.16)"/>
+</svg>`,
+  )
+  const textSvg = Buffer.from(buildTextOverlaySvg({ title, theme, mood, length }))
+  const cover = await sharp(background)
+    .composite([
+      { input: overlaySvg, blend: "over" },
+      { input: textSvg, blend: "over" },
+    ])
+    .webp({ quality: 90 })
+    .toBuffer()
+
+  const bgSquare = await sharp(image)
+    .resize(COVER_SQUARE_SIZE, COVER_SQUARE_SIZE, { fit: "cover" })
+    .toBuffer()
+  const overlaySvgSquare = Buffer.from(
+    `<svg width="${COVER_SQUARE_SIZE}" height="${COVER_SQUARE_SIZE}" viewBox="0 0 ${COVER_SQUARE_SIZE} ${COVER_SQUARE_SIZE}" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="rgba(0,0,0,0.16)"/>
+</svg>`,
+  )
+  const textSvgSquare = Buffer.from(buildTextOverlaySvgSquare({ title, theme, mood, length }))
+  const coverSquare = await sharp(bgSquare)
+    .composite([
+      { input: overlaySvgSquare, blend: "over" },
+      { input: textSvgSquare, blend: "over" },
+    ])
+    .webp({ quality: 90 })
+    .toBuffer()
+
+  return { cover, coverSquare }
+}
