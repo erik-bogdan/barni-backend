@@ -5,7 +5,7 @@ import { db } from '../lib/db'
 import { auth } from '../lib/auth'
 import { betterAuthMiddleware } from '../plugins/auth/middleware'
 import { requireRole } from '../plugins/auth/requireRole'
-import { user, stories, orders, pricingPlans, coupons, orderItems, storyTransactions, storyCreditTransactions, audioStarTransactions, children, stripeEvents, payments, storyFeedback, freeStories, storyPricing, feedbacks, feedbackReplies } from '../../packages/db/src/schema'
+import { user, stories, orders, pricingPlans, coupons, orderItems, storyTransactions, storyCreditTransactions, audioStarTransactions, children, stripeEvents, payments, storyFeedback, freeStories, storyPricing, feedbacks, feedbackReplies, storyGptRequests } from '../../packages/db/src/schema'
 import { calculateGPTCost, calculateAudioCost } from '../services/gpt-cost'
 import { extractKeyFromPublicUrl, getPresignedUrl } from '../services/s3'
 import { buildCoverKey, buildCoverSquareKey, processFreeStoryCoverJob, processFreeStoryCoverUpload, buildFreeStoryCoverKey, buildFreeStoryCoverSquareKey } from '../services/cover/coverService'
@@ -1540,6 +1540,29 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       startDate: t.Optional(t.String()),
       endDate: t.Optional(t.String()),
       feedbackType: t.Optional(t.String()),
+    }),
+  })
+  .get('/stories/:id/gpt-requests', async ({ params }) => {
+    const requests = await db
+      .select({
+        id: storyGptRequests.id,
+        storyId: storyGptRequests.storyId,
+        operationType: storyGptRequests.operationType,
+        model: storyGptRequests.model,
+        requestText: storyGptRequests.requestText,
+        responseText: storyGptRequests.responseText,
+        requestId: storyGptRequests.requestId,
+        responseId: storyGptRequests.responseId,
+        createdAt: storyGptRequests.createdAt,
+      })
+      .from(storyGptRequests)
+      .where(eq(storyGptRequests.storyId, params.id))
+      .orderBy(desc(storyGptRequests.createdAt))
+
+    return { requests }
+  }, {
+    params: t.Object({
+      id: t.String(),
     }),
   })
   // Free Stories endpoints

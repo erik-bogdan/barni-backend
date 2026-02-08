@@ -16,7 +16,7 @@ const GPT_MODEL_PRICES: Record<string, { input: number; output: number }> = {
  * Default USD to HUF exchange rate
  * Can be overridden via env variable GPT_USD_TO_HUF_RATE
  */
-const DEFAULT_USD_TO_HUF = 380 // Approximate rate, update as needed
+const DEFAULT_USD_TO_HUF = 320 // Approximate rate, update as needed
 
 /**
  * Calculate GPT cost in HUF based on token usage

@@ -3,6 +3,10 @@ import { getLogger } from "../lib/logger"
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini"
 
+function formatRequestText(systemPrompt: string, userPrompt: string) {
+  return `System:\n${systemPrompt}\n\nUser:\n${userPrompt}`
+}
+
 export function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
@@ -13,6 +17,9 @@ export function getOpenAIClient() {
 
 export type StoryGenerationResult = {
   text: string
+  requestText: string
+  responseText: string
+  meta: StoryMeta
   model: string
   usage: {
     promptTokens?: number
@@ -30,15 +37,29 @@ export async function generateStoryText(prompt: string): Promise<StoryGeneration
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
   const operation = "story.generate_text"
+  const systemPrompt = "You generate bedtime stories."
+  const userPrompt = `
+${prompt}
+
+Extract JSON with:
+title (max 6 words),
+summary (1 sentence),
+setting (1-4 words),
+conflict (1-6 words),
+tone (nyugodt|vidam|kalandos),
+text (full story).
+  `.trim()
+  const requestText = formatRequestText(systemPrompt, userPrompt)
   const start = Date.now()
   let response: Awaited<ReturnType<typeof client.chat.completions.create>>
   try {
     response = await client.chat.completions.create({
       model,
       messages: [
-        { role: "system", content: "You generate bedtime stories." },
-        { role: "user", content: prompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
+      response_format: { type: "json_object" },
     })
   } catch (error) {
     const durationMs = Date.now() - start
@@ -46,7 +67,8 @@ export async function generateStoryText(prompt: string): Promise<StoryGeneration
     throw error
   }
 
-  const text = response.choices[0]?.message?.content?.trim() || ""
+  const responseText = response.choices[0]?.message?.content?.trim() || ""
+  const raw = responseText || "{}"
   const usage = response.usage
   const durationMs = Date.now() - start
   logger.info(
@@ -63,18 +85,44 @@ export async function generateStoryText(prompt: string): Promise<StoryGeneration
     "openai.completed",
   )
 
-  return {
-    text,
-    model,
-    usage: {
-      promptTokens: usage?.prompt_tokens,
-      completionTokens: usage?.completion_tokens,
-      totalTokens: usage?.total_tokens ?? 0,
-      inputTokens: usage?.prompt_tokens, // For compatibility with input_tokens naming
-      outputTokens: usage?.completion_tokens, // For compatibility with output_tokens naming
-    },
-    requestId: response.id,
-    responseId: response.id,
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoryMeta> & { text?: string }
+    if (!parsed.title || !parsed.summary || !parsed.setting || !parsed.conflict || !parsed.tone) {
+      throw new Error("Story metadata missing required fields")
+    }
+    if (!["nyugodt", "vidam", "kalandos"].includes(parsed.tone)) {
+      throw new Error(`Invalid tone: ${parsed.tone}`)
+    }
+    if (!parsed.text || typeof parsed.text !== "string") {
+      throw new Error("Story text missing")
+    }
+    return {
+      text: parsed.text.trim(),
+      meta: {
+        title: parsed.title,
+        summary: parsed.summary,
+        setting: parsed.setting,
+        conflict: parsed.conflict,
+        tone: parsed.tone as "nyugodt" | "vidam" | "kalandos",
+      },
+      requestText,
+      responseText: raw,
+      model,
+      usage: {
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens ?? 0,
+        inputTokens: usage?.prompt_tokens, // For compatibility with input_tokens naming
+        outputTokens: usage?.completion_tokens, // For compatibility with output_tokens naming
+      },
+      requestId: response.id,
+      responseId: response.id,
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to parse story response: ${error.message}`)
+    }
+    throw new Error("Failed to parse story response")
   }
 }
 
@@ -88,6 +136,8 @@ export type StoryMeta = {
 
 export type StoryMetaResult = {
   meta: StoryMeta
+  requestText: string
+  responseText: string
   model: string
   usage: {
     promptTokens?: number
@@ -105,19 +155,8 @@ export async function extractStoryMeta(storyText: string): Promise<StoryMetaResu
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
   const operation = "story.extract_meta"
-  const start = Date.now()
-  let response: Awaited<ReturnType<typeof client.chat.completions.create>>
-  try {
-    response = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: "Extract structured metadata in Hungarian.",
-        },
-        {
-          role: "user",
-          content: `
+  const systemPrompt = "Extract structured metadata in Hungarian."
+  const userPrompt = `
 Extract JSON with:
 title (max 6 words),
 summary (1 sentence),
@@ -127,7 +166,21 @@ tone (nyugodt|vidam|kalandos).
 
 Story:
 ${storyText}
-        `.trim(),
+        `.trim()
+  const requestText = formatRequestText(systemPrompt, userPrompt)
+  const start = Date.now()
+  let response: Awaited<ReturnType<typeof client.chat.completions.create>>
+  try {
+    response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
+        },
+        {
+          role: "user",
+          content: userPrompt,
         },
       ],
       response_format: { type: "json_object" },
@@ -173,6 +226,8 @@ ${storyText}
         conflict: parsed.conflict,
         tone: parsed.tone as "nyugodt" | "vidam" | "kalandos",
       },
+      requestText,
+      responseText: raw,
       model,
       usage: {
         promptTokens: usage?.prompt_tokens,
@@ -211,6 +266,9 @@ export type StoryTreeGenerationResult = {
       }>
     }>
   }
+  meta: StoryMeta
+  requestText: string
+  responseText: string
   model: string
   usage: {
     promptTokens?: number
@@ -228,6 +286,19 @@ export async function generateStoryTree(prompt: string): Promise<StoryTreeGenera
   const client = getOpenAIClient()
   const model = DEFAULT_MODEL
   const operation = "story.generate_tree"
+  const systemPrompt =
+    "You generate interactive decision-tree bedtime stories in Hungarian. Return valid JSON matching the StoryTree schema."
+  const userPrompt = `
+${prompt}
+
+Extend the JSON with these top-level fields:
+title (max 6 words),
+summary (1 sentence),
+setting (1-4 words),
+conflict (1-6 words),
+tone (nyugodt|vidam|kalandos).
+  `.trim()
+  const requestText = formatRequestText(systemPrompt, userPrompt)
   const start = Date.now()
   let response: Awaited<ReturnType<typeof client.chat.completions.create>>
   try {
@@ -236,11 +307,11 @@ export async function generateStoryTree(prompt: string): Promise<StoryTreeGenera
       messages: [
         {
           role: "system",
-          content: "You generate interactive decision-tree bedtime stories in Hungarian. Return valid JSON matching the StoryTree schema.",
+          content: systemPrompt,
         },
         {
           role: "user",
-          content: prompt,
+          content: userPrompt,
         },
       ],
       response_format: { type: "json_object" },
@@ -269,8 +340,18 @@ export async function generateStoryTree(prompt: string): Promise<StoryTreeGenera
   )
 
   try {
-    const parsed = JSON.parse(raw) as StoryTreeGenerationResult["storyTree"]
+    const parsed = JSON.parse(raw) as Partial<
+      StoryTreeGenerationResult["storyTree"] &
+        StoryMeta
+    >
     
+    if (!parsed.title || !parsed.summary || !parsed.setting || !parsed.conflict || !parsed.tone) {
+      throw new Error("Story metadata missing required fields")
+    }
+    if (!["nyugodt", "vidam", "kalandos"].includes(parsed.tone)) {
+      throw new Error(`Invalid tone: ${parsed.tone}`)
+    }
+
     // Basic validation
     if (!parsed.type || parsed.type !== "tree") {
       throw new Error("Invalid story tree type")
@@ -318,7 +399,20 @@ export async function generateStoryTree(prompt: string): Promise<StoryTreeGenera
     }
 
     return {
-      storyTree: parsed,
+      storyTree: {
+        type: parsed.type,
+        startNodeId: parsed.startNodeId,
+        nodes: parsed.nodes,
+      },
+      meta: {
+        title: parsed.title,
+        summary: parsed.summary,
+        setting: parsed.setting,
+        conflict: parsed.conflict,
+        tone: parsed.tone as "nyugodt" | "vidam" | "kalandos",
+      },
+      requestText,
+      responseText: raw,
       model,
       usage: {
         promptTokens: usage?.prompt_tokens,

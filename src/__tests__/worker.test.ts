@@ -34,13 +34,21 @@ describe("processStoryJob", () => {
     }
 
     const openai = {
-      generateStoryText: async () => "Egy nyugodt mese...",
-      extractStoryMeta: async () => ({
-        title: "Csendes erdő",
-        summary: "Egy békés történet.",
-        setting: "erdő",
-        conflict: "félreértés",
-        tone: "nyugodt",
+      generateStoryText: async () => ({
+        text: "Egy nyugodt mese...",
+        meta: {
+          title: "Csendes erdő",
+          summary: "Egy békés történet.",
+          setting: "erdő",
+          conflict: "félreértés",
+          tone: "nyugodt",
+        },
+        requestText: "System:\nYou generate bedtime stories.\n\nUser:\n...",
+        responseText: "{}",
+        model: "gpt-5-mini",
+        usage: { totalTokens: 100, inputTokens: 50, outputTokens: 50 },
+        requestId: "req-1",
+        responseId: "res-1",
       }),
     }
 

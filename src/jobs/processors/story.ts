@@ -1,5 +1,5 @@
 import { buildStoryPrompt, buildInteractiveStoryPrompt } from "../../services/storyPrompt"
-import type { StoryMeta, StoryGenerationResult, StoryMetaResult, StoryTreeGenerationResult } from "../../services/openai"
+import type { StoryGenerationResult, StoryTreeGenerationResult } from "../../services/openai"
 import { getLogger } from "../../lib/logger"
 
 type AvoidPair = {
@@ -65,6 +65,17 @@ export type StoryProcessorDeps = {
         responseId?: string
       },
     ): Promise<void>
+    saveStoryGptRequest(
+      storyId: string,
+      payload: {
+        operationType: "story_generation" | "meta_extraction"
+        model: string
+        requestText: string
+        responseText: string
+        requestId?: string
+        responseId?: string
+      },
+    ): Promise<void>
     refundCredits(userId: string, storyId: string, amount: number): Promise<void>
     notifyStoryReady(
       userId: string,
@@ -76,7 +87,6 @@ export type StoryProcessorDeps = {
   openai: {
     generateStoryText(prompt: string): Promise<StoryGenerationResult>
     generateStoryTree(prompt: string): Promise<StoryTreeGenerationResult>
-    extractStoryMeta(text: string): Promise<StoryMetaResult>
   }
   cover: {
     processCoverJob(params: { storyId: string }, deps?: unknown): Promise<void>
@@ -134,40 +144,25 @@ export async function processStoryJob(
         requestId: treeResult.requestId,
         responseId: treeResult.responseId,
       })
-
-      await deps.repo.updateStatus(storyId, "extracting_meta")
-      
-      // Extract metadata from first node text
-      const firstNodeText = treeResult.storyTree.nodes.find(n => n.id === treeResult.storyTree.startNodeId)?.text || ""
-      const metaResult = await deps.openai.extractStoryMeta(firstNodeText)
-
-      if (!metaResult.meta.title || !metaResult.meta.summary || !metaResult.meta.setting || !metaResult.meta.conflict || !metaResult.meta.tone) {
-        throw new Error("Story metadata extraction incomplete")
-      }
-
-      // Save metadata extraction transaction
-      await deps.repo.saveStoryTransaction(storyId, {
-        operationType: "meta_extraction",
-        model: metaResult.model,
-        inputTokens: metaResult.usage.inputTokens ?? metaResult.usage.promptTokens ?? 0,
-        outputTokens: metaResult.usage.outputTokens ?? metaResult.usage.completionTokens ?? 0,
-        totalTokens: metaResult.usage.totalTokens,
-        promptTokens: metaResult.usage.promptTokens,
-        completionTokens: metaResult.usage.completionTokens,
-        requestId: metaResult.requestId,
-        responseId: metaResult.responseId,
+      await deps.repo.saveStoryGptRequest(storyId, {
+        operationType: "story_generation",
+        model: treeResult.model,
+        requestText: treeResult.requestText,
+        responseText: treeResult.responseText,
+        requestId: treeResult.requestId,
+        responseId: treeResult.responseId,
       })
 
       const primaryModel = treeResult.model
 
-      readyTitle = metaResult.meta.title
+      readyTitle = treeResult.meta.title
       await deps.repo.saveInteractiveStoryContent(storyId, {
-        title: metaResult.meta.title,
-        summary: metaResult.meta.summary,
+        title: treeResult.meta.title,
+        summary: treeResult.meta.summary,
         storyData: treeResult.storyTree,
-        setting: metaResult.meta.setting,
-        conflict: metaResult.meta.conflict,
-        tone: metaResult.meta.tone,
+        setting: treeResult.meta.setting,
+        conflict: treeResult.meta.conflict,
+        tone: treeResult.meta.tone,
         model: primaryModel,
       })
     } else {
@@ -196,38 +191,26 @@ export async function processStoryJob(
         requestId: storyResult.requestId,
         responseId: storyResult.responseId,
       })
-
-      await deps.repo.updateStatus(storyId, "extracting_meta")
-      const metaResult = await deps.openai.extractStoryMeta(storyResult.text)
-
-      if (!metaResult.meta.title || !metaResult.meta.summary || !metaResult.meta.setting || !metaResult.meta.conflict || !metaResult.meta.tone) {
-        throw new Error("Story metadata extraction incomplete")
-      }
-
-      // Save metadata extraction transaction
-      await deps.repo.saveStoryTransaction(storyId, {
-        operationType: "meta_extraction",
-        model: metaResult.model,
-        inputTokens: metaResult.usage.inputTokens ?? metaResult.usage.promptTokens ?? 0,
-        outputTokens: metaResult.usage.outputTokens ?? metaResult.usage.completionTokens ?? 0,
-        totalTokens: metaResult.usage.totalTokens,
-        promptTokens: metaResult.usage.promptTokens,
-        completionTokens: metaResult.usage.completionTokens,
-        requestId: metaResult.requestId,
-        responseId: metaResult.responseId,
+      await deps.repo.saveStoryGptRequest(storyId, {
+        operationType: "story_generation",
+        model: storyResult.model,
+        requestText: storyResult.requestText,
+        responseText: storyResult.responseText,
+        requestId: storyResult.requestId,
+        responseId: storyResult.responseId,
       })
 
       // Use the model from story generation as the primary model
       const primaryModel = storyResult.model
 
-      readyTitle = metaResult.meta.title
+      readyTitle = storyResult.meta.title
       await deps.repo.saveStoryContent(storyId, {
-        title: metaResult.meta.title,
-        summary: metaResult.meta.summary,
+        title: storyResult.meta.title,
+        summary: storyResult.meta.summary,
         text: storyResult.text,
-        setting: metaResult.meta.setting,
-        conflict: metaResult.meta.conflict,
-        tone: metaResult.meta.tone,
+        setting: storyResult.meta.setting,
+        conflict: storyResult.meta.conflict,
+        tone: storyResult.meta.tone,
         model: primaryModel,
       })
     }

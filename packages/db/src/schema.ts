@@ -372,6 +372,20 @@ export const storyTransactions = pgTable("story_transactions", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const storyGptRequests = pgTable("story_gpt_requests", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  storyId: uuid("story_id")
+    .notNull()
+    .references(() => stories.id, { onDelete: "cascade" }),
+  operationType: text("operation_type").notNull().default("story_generation"), // "story_generation" | "meta_extraction"
+  model: text("model").notNull(), // OpenAI model name (e.g., "gpt-5-mini")
+  requestText: text("request_text").notNull(), // Full prompt text sent to GPT
+  responseText: text("response_text").notNull(), // Full response text from GPT
+  requestId: text("request_id"), // OpenAI request ID (if available)
+  responseId: text("response_id"), // OpenAI response ID (if available)
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 /**
  * Payment provider integration tables
  */

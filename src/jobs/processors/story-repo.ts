@@ -6,6 +6,7 @@ import {
   stories,
   storyCreditTransactions,
   storyTransactions,
+  storyGptRequests,
   notifications,
 } from "../../../packages/db/src/schema"
 
@@ -73,6 +74,17 @@ export type StoryRepo = {
       totalTokens: number
       promptTokens?: number
       completionTokens?: number
+      requestId?: string
+      responseId?: string
+    },
+  ): Promise<void>
+  saveStoryGptRequest(
+    storyId: string,
+    payload: {
+      operationType: "story_generation" | "meta_extraction"
+      model: string
+      requestText: string
+      responseText: string
       requestId?: string
       responseId?: string
     },
@@ -177,6 +189,17 @@ export function createStoryRepo(
         totalTokens: payload.totalTokens,
         promptTokens: payload.promptTokens ?? null,
         completionTokens: payload.completionTokens ?? null,
+        requestId: payload.requestId ?? null,
+        responseId: payload.responseId ?? null,
+      })
+    },
+    async saveStoryGptRequest(storyId, payload) {
+      await db.insert(storyGptRequests).values({
+        storyId,
+        operationType: payload.operationType,
+        model: payload.model,
+        requestText: payload.requestText,
+        responseText: payload.responseText,
         requestId: payload.requestId ?? null,
         responseId: payload.responseId ?? null,
       })

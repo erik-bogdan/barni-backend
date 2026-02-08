@@ -1,7 +1,7 @@
 import amqp from "amqplib"
 
 import { db } from "../lib/db"
-import { generateStoryText, generateStoryTree, extractStoryMeta } from "../services/openai"
+import { generateStoryText, generateStoryTree } from "../services/openai"
 import { createStoryRepo } from "./processors/story-repo"
 import { processStoryJob } from "./processors/story"
 import { QUEUE_NAME } from "./queue"
@@ -55,7 +55,7 @@ async function startWorker() {
 
       await processStoryJob(payload.storyId, {
         repo,
-        openai: { generateStoryText, generateStoryTree, extractStoryMeta },
+        openai: { generateStoryText, generateStoryTree },
         cover: {
           processCoverJob: async (params, deps) => {
             const coverRepo = createCoverRepo(db)
