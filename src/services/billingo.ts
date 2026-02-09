@@ -203,7 +203,57 @@ export async function createInvoiceForOrder(
 
   getLogger().info({ invoiceId }, "billingo.invoice_created");
 
+  // Send invoice via email if email is available
+  if (userProfile.email && userProfile.email.trim() !== "") {
+    try {
+      await sendInvoiceByEmail(invoiceId, [userProfile.email]);
+      getLogger().info({ invoiceId, email: userProfile.email }, "billingo.invoice_sent");
+    } catch (error) {
+      // Log error but don't fail invoice creation - email sending is not critical
+      getLogger().error(
+        { err: error, invoiceId, email: userProfile.email },
+        "billingo.invoice_send_failed",
+      );
+    }
+  }
+
   return invoiceId;
+}
+
+/**
+ * Send invoice by email using Billingo API
+ */
+export async function sendInvoiceByEmail(
+  invoiceId: number,
+  emails: string[],
+): Promise<void> {
+  // Use OpenAPI to make direct API call since DocumentService might not have sendDocument method
+  const response = await fetch(
+    `https://api.billingo.hu/v3/documents/${invoiceId}/send`,
+    {
+      method: "POST",
+      headers: {
+        "X-API-KEY": env.BILLINGO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        emails: emails.filter((email) => email && email.trim() !== ""),
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Failed to send invoice: ${response.status} ${response.statusText} - ${errorText}`,
+    );
+  }
+
+  const result = await response.json();
+  getLogger().info(
+    { invoiceId, sentEmails: result.emails },
+    "billingo.invoice_sent_success",
+  );
 }
 
 /**

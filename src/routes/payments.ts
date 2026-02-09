@@ -457,9 +457,8 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         const { getInvoicePublicUrl } = await import("../services/billingo");
         const invoiceUrl = await getInvoicePublicUrl(order.billingoInvoiceId);
 
-        // Redirect to Billingo public URL
-        set.redirect = invoiceUrl;
-        return;
+        // Return URL instead of redirecting (for better compatibility with frontend)
+        return { invoiceUrl };
       } catch (error: any) {
         logger.error({ err: error, orderId: params.id }, "invoice.fetch_failed");
         set.status = 500;
