@@ -36,11 +36,11 @@ export async function validateCoupon(
     .limit(1);
 
   if (!coupon) {
-    return { valid: false, error: "Coupon not found" };
+    return { valid: false, error: "A kupon nem található" };
   }
 
   if (!coupon.isActive) {
-    return { valid: false, error: "Coupon is not active" };
+    return { valid: false, error: "A kupon nem aktív" };
   }
 
   // Check time window
@@ -48,26 +48,26 @@ export async function validateCoupon(
   if (coupon.startsAt) {
     const startTime = coupon.startsAt.getTime();
     if (nowTime < startTime) {
-      return { valid: false, error: "Coupon not yet valid" };
+      return { valid: false, error: "A kupon még nem érvényes" };
     }
   }
   if (coupon.endsAt) {
     const endTime = coupon.endsAt.getTime();
     if (nowTime > endTime) {
-      return { valid: false, error: "Coupon has expired" };
+      return { valid: false, error: "A kupon lejárt" };
     }
   }
 
   // Check max redemptions
   if (coupon.maxRedemptions !== null && coupon.redeemedCount >= coupon.maxRedemptions) {
-    return { valid: false, error: "Coupon has reached maximum redemptions" };
+    return { valid: false, error: "A kupon elérte a maximális felhasználhatóságot!" };
   }
 
   // Check min order amount
   if (coupon.minOrderAmountCents !== null && subtotalCents < coupon.minOrderAmountCents) {
     return {
       valid: false,
-      error: `Minimum order amount is ${coupon.minOrderAmountCents / 100} ${coupon.currency ?? "HUF"}`,
+      error: `A rendelés minimum összege ${coupon.minOrderAmountCents / 100} ${coupon.currency ?? "HUF"}`,
     };
   }
 
