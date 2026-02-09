@@ -167,9 +167,10 @@ export async function createInvoiceForOrder(
   }
 
   // Create invoice document using library - directly pass DocumentInsert object
+  const blockId = env.BILLINGO_BLOCK_ID ? parseInt(env.BILLINGO_BLOCK_ID, 10) : 0;
   const documentInsert: DocumentInsert = {
     partner_id: partnerId,
-    block_id: 0, // Required field - 0 means default block
+    block_id: blockId, // Configurable via BILLINGO_BLOCK_ID env var, defaults to 0 (default block)
     type: DocumentInsertType.INVOICE,
     fulfillment_date: fulfillmentDate,
     due_date: dueDate,

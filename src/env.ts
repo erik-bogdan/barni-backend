@@ -23,6 +23,7 @@ const EnvSchema = z.object({
   // General
   DEFAULT_CURRENCY: z.string().default('HUF'),
   BILLINGO_API_KEY: z.string().min(1),
+  BILLINGO_BLOCK_ID: z.string().optional(),
   REGISTER_URL: z.string().url().default('http://localhost:3000'),
   IS_SHARED_ABLE_TO_DELETE_TRANSACTION: z.string().optional().default('false'),
 })
@@ -49,6 +50,7 @@ export const env: Env = (() => {
     BARION_CALLBACK_SECRET: process.env.BARION_CALLBACK_SECRET,
     DEFAULT_CURRENCY: process.env.DEFAULT_CURRENCY,
     BILLINGO_API_KEY: process.env.BILLINGO_API_KEY,
+    BILLINGO_BLOCK_ID: process.env.BILLINGO_BLOCK_ID,
     REGISTER_URL: process.env.REGISTER_URL,
     IS_SHARED_ABLE_TO_DELETE_TRANSACTION: process.env.IS_SHARED_ABLE_TO_DELETE_TRANSACTION,
   })
