@@ -5,9 +5,12 @@ import {
   invitationCreditTransactions,
   storyCreditTransactions,
   invitationSettings,
+  preRegistrations,
   user,
 } from "../../packages/db/src/schema"
 import { getLogger } from "../lib/logger"
+
+const PRE_REGISTRATION_APPROVAL_CREDITS_KEY = "credits_for_pre_registration_approval"
 
 export async function processInvitationOnRegistration(
   userId: string,
@@ -67,6 +70,45 @@ export async function processInvitationOnRegistration(
 
   const inviterCreditAmount = creditsForInviter[0]?.value ?? 0
   const inviteeCreditAmount = creditsForInvitee[0]?.value ?? 0
+
+  const [preRegistrationMatch] = await db
+    .select({ id: preRegistrations.id })
+    .from(preRegistrations)
+    .where(
+      and(
+        eq(preRegistrations.invitationId, invitation.id),
+        eq(preRegistrations.status, "approved"),
+      )
+    )
+    .limit(1)
+
+  // Pre-registration approval flow uses a dedicated starter credit setting.
+  // We skip inviter/invitee invitation rewards for these system-issued invites.
+  if (preRegistrationMatch) {
+    const preRegistrationCreditsSetting = await db
+      .select()
+      .from(invitationSettings)
+      .where(eq(invitationSettings.key, PRE_REGISTRATION_APPROVAL_CREDITS_KEY))
+      .limit(1)
+
+    const starterCreditAmount = preRegistrationCreditsSetting[0]?.value ?? 0
+
+    if (starterCreditAmount > 0) {
+      await db.insert(storyCreditTransactions).values({
+        userId,
+        type: "bonus",
+        amount: starterCreditAmount,
+        reason: "Regisztrációs jelentkezés jóváhagyása",
+        source: "invitation_system",
+      })
+    }
+
+    getLogger().info(
+      { invitationId: invitation.id, userId, starterCreditAmount },
+      "invitations.processed_pre_registration",
+    )
+    return
+  }
 
   // Award credits to inviter (who sent the invitation)
   if (inviterCreditAmount > 0) {

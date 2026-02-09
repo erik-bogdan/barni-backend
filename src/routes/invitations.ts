@@ -55,6 +55,8 @@ async function getInvitationSetting(key: string): Promise<number> {
   return setting[0]?.value ?? 0
 }
 
+const PRE_REGISTRATION_APPROVAL_CREDITS_KEY = "credits_for_pre_registration_approval"
+
 // User routes - no admin required
 export const invitationsApi = new Elysia({ name: "invitations", prefix: "/invitations" })
   .use(betterAuthMiddleware)
@@ -458,12 +460,23 @@ export const invitationsApi = new Elysia({ name: "invitations", prefix: "/invita
       ? "Barni Maci" 
       : (inviter[0]?.name || inviter[0]?.email || "Ismeretlen")
 
+    const [preRegistration] = await db
+      .select({
+        firstName: preRegistrations.firstName,
+        lastName: preRegistrations.lastName,
+      })
+      .from(preRegistrations)
+      .where(eq(preRegistrations.invitationId, inv.id))
+      .limit(1)
+
     return {
       valid: true,
       invitation: {
         id: inv.id,
         inviteeEmail: inv.inviteeEmail,
         inviterName,
+        firstName: preRegistration?.firstName ?? null,
+        lastName: preRegistration?.lastName ?? null,
       },
     }
   })
@@ -783,6 +796,70 @@ export const preRegistrationAdminApi = new Elysia({ name: "pre-registration-admi
 
     return { requests: requestsWithRegistrationStatus }
   })
+  // GET /admin/pre-registrations/settings - Get pre-registration settings
+  .get("/settings", async ({ request, set }) => {
+    const session = await requireSession(request.headers, set)
+    if (!session) return { error: "Unauthorized" }
+
+    const settings = await db
+      .select()
+      .from(invitationSettings)
+      .where(eq(invitationSettings.key, PRE_REGISTRATION_APPROVAL_CREDITS_KEY))
+
+    return { settings }
+  })
+  // PUT /admin/pre-registrations/settings/:key - Update pre-registration setting
+  .put(
+    "/settings/:key",
+    async ({ params, body, request, set }) => {
+      const session = await requireSession(request.headers, set)
+      if (!session) return { error: "Unauthorized" }
+
+      if (params.key !== PRE_REGISTRATION_APPROVAL_CREDITS_KEY) {
+        set.status = 400
+        return { error: "Unsupported setting key" }
+      }
+
+      const existing = await db
+        .select()
+        .from(invitationSettings)
+        .where(eq(invitationSettings.key, params.key))
+        .limit(1)
+
+      if (existing.length > 0) {
+        const [updated] = await db
+          .update(invitationSettings)
+          .set({
+            value: body.value,
+            description: body.description || null,
+          })
+          .where(eq(invitationSettings.key, params.key))
+          .returning()
+
+        return { setting: updated }
+      }
+
+      const [created] = await db
+        .insert(invitationSettings)
+        .values({
+          key: params.key,
+          value: body.value,
+          description: body.description || null,
+        })
+        .returning()
+
+      return { setting: created }
+    },
+    {
+      params: t.Object({
+        key: t.String(),
+      }),
+      body: t.Object({
+        value: t.Number(),
+        description: t.Optional(t.String()),
+      }),
+    }
+  )
   // POST /admin/pre-registrations/:id/approve - Approve pre-registration and generate invitation
   .post(
     "/:id/approve",

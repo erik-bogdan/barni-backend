@@ -707,7 +707,7 @@ export const invitationCreditTransactions = pgTable("invitation_credit_transacti
 // Invitation settings - admin configurable settings
 export const invitationSettings = pgTable("invitation_settings", {
   id: uuid("id").defaultRandom().primaryKey(),
-  key: text("key").notNull().unique(), // e.g., "credits_on_request_approval", "credits_on_invitee_registration"
+  key: text("key").notNull().unique(), // e.g., "credits_for_inviter_on_registration", "credits_for_invitee_on_registration", "credits_for_pre_registration_approval"
   value: integer("value").notNull(), // Credit amount
   description: text("description"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
