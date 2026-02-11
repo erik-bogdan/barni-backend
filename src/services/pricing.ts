@@ -1,15 +1,58 @@
 import { eq, and, gte, lte, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { pricingPlans } from "../../packages/db/src/schema";
+import { pricingPlans, orders } from "../../packages/db/src/schema";
 
 export type PricingPlan = typeof pricingPlans.$inferSelect;
 type RegistrationPromoType = "percent" | "amount" | "bonus_credits";
+
+async function hasUserUsedRegistrationPromo(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  userId: string | undefined,
+  userCreatedAt: Date | null | undefined,
+  plan: PricingPlan,
+  now: Date = new Date(),
+): Promise<boolean> {
+  if (!userId || !userCreatedAt || !plan.registrationPromoValidHours) {
+    return false;
+  }
+
+  const registrationTime = userCreatedAt.getTime();
+  const expiresAt = registrationTime + plan.registrationPromoValidHours * 60 * 60 * 1000;
+  const nowTime = now.getTime();
+
+  // Check if promo window is still active
+  if (nowTime > expiresAt) {
+    return false; // Window expired, can't have used it
+  }
+
+  // Check if user has any paid orders created within the promo window
+  const [result] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.userId, userId),
+        eq(orders.status, "paid"),
+        gte(orders.createdAt, new Date(registrationTime)),
+        lte(orders.createdAt, new Date(expiresAt)),
+      ),
+    );
+
+  return (result?.count ?? 0) > 0;
+}
 
 function isRegistrationPromoActive(
   plan: PricingPlan,
   userCreatedAt?: Date | null,
   now: Date = new Date(),
+  hasUsedPromo: boolean = false,
 ): boolean {
+  if (hasUsedPromo) {
+    return false; // User already used the promo
+  }
+
   if (!plan.registrationPromoEnabled || !userCreatedAt) {
     return false;
   }
@@ -36,8 +79,9 @@ function getRegistrationPromoRemainingHours(
   plan: PricingPlan,
   userCreatedAt?: Date | null,
   now: Date = new Date(),
+  hasUsedPromo: boolean = false,
 ): number | null {
-  if (!isRegistrationPromoActive(plan, userCreatedAt, now) || !plan.registrationPromoValidHours) {
+  if (!isRegistrationPromoActive(plan, userCreatedAt, now, hasUsedPromo) || !plan.registrationPromoValidHours) {
     return null;
   }
 
@@ -51,8 +95,9 @@ function getRegistrationPromoEndsAt(
   plan: PricingPlan,
   userCreatedAt?: Date | null,
   now: Date = new Date(),
+  hasUsedPromo: boolean = false,
 ): Date | null {
-  if (!isRegistrationPromoActive(plan, userCreatedAt, now) || !plan.registrationPromoValidHours) {
+  if (!isRegistrationPromoActive(plan, userCreatedAt, now, hasUsedPromo) || !plan.registrationPromoValidHours) {
     return null;
   }
 
@@ -66,8 +111,9 @@ function getRegistrationPromoDiscountCents(
   effectiveBasePriceCents: number,
   userCreatedAt?: Date | null,
   now: Date = new Date(),
+  hasUsedPromo: boolean = false,
 ): number {
-  if (!isRegistrationPromoActive(plan, userCreatedAt, now)) {
+  if (!isRegistrationPromoActive(plan, userCreatedAt, now, hasUsedPromo)) {
     return 0;
   }
 
@@ -87,9 +133,10 @@ export function getEffectiveBonusCredits(
   plan: PricingPlan,
   now: Date = new Date(),
   userCreatedAt?: Date | null,
+  hasUsedPromo: boolean = false,
 ): number {
   const baseBonusCredits = plan.bonusCredits ?? 0;
-  if (!isRegistrationPromoActive(plan, userCreatedAt, now)) {
+  if (!isRegistrationPromoActive(plan, userCreatedAt, now, hasUsedPromo)) {
     return baseBonusCredits;
   }
 
@@ -111,14 +158,12 @@ export function getEffectivePrice(
   plan: PricingPlan,
   now: Date = new Date(),
   userCreatedAt?: Date | null,
+  hasUsedPromo: boolean = false,
 ): number {
   if (!plan.promoEnabled) {
-    const registrationDiscount = getRegistrationPromoDiscountCents(
-      plan,
-      plan.priceCents,
-      userCreatedAt,
-      now,
-    );
+    const registrationDiscount = hasUsedPromo
+      ? 0
+      : getRegistrationPromoDiscountCents(plan, plan.priceCents, userCreatedAt, now, hasUsedPromo);
     return Math.max(0, plan.priceCents - registrationDiscount);
   }
 
@@ -128,12 +173,9 @@ export function getEffectivePrice(
 
   // Check if promo is active within time window
   if (nowTime < promoStart || nowTime > promoEnd) {
-    const registrationDiscount = getRegistrationPromoDiscountCents(
-      plan,
-      plan.priceCents,
-      userCreatedAt,
-      now,
-    );
+    const registrationDiscount = hasUsedPromo
+      ? 0
+      : getRegistrationPromoDiscountCents(plan, plan.priceCents, userCreatedAt, now, hasUsedPromo);
     return Math.max(0, plan.priceCents - registrationDiscount);
   }
 
@@ -153,12 +195,9 @@ export function getEffectivePrice(
     baseEffectivePrice = plan.promoPriceCents;
   }
 
-  const registrationDiscount = getRegistrationPromoDiscountCents(
-    plan,
-    baseEffectivePrice,
-    userCreatedAt,
-    now,
-  );
+  const registrationDiscount = hasUsedPromo
+    ? 0
+    : getRegistrationPromoDiscountCents(plan, baseEffectivePrice, userCreatedAt, now, hasUsedPromo);
   return Math.max(0, baseEffectivePrice - registrationDiscount);
 }
 
@@ -185,6 +224,7 @@ export async function getActivePricingPlans(
   db: PostgresJsDatabase<Record<string, unknown>>,
   now: Date = new Date(),
   userCreatedAt?: Date | null,
+  userId?: string,
 ): Promise<
   Array<
     PricingPlan & {
@@ -202,12 +242,18 @@ export async function getActivePricingPlans(
     .where(eq(pricingPlans.isActive, true))
     .orderBy(pricingPlans.priceCents);
 
+  // Check if user has already used registration promo (check first plan with registration promo enabled)
+  const firstPromoPlan = plans.find((p) => p.registrationPromoEnabled);
+  const hasUsedPromo = firstPromoPlan && userId && userCreatedAt
+    ? await hasUserUsedRegistrationPromo(db, userId, userCreatedAt, firstPromoPlan, now)
+    : false;
+
   return plans.map((plan) => ({
     ...plan,
-    effectivePriceCents: getEffectivePrice(plan, now, userCreatedAt),
-    effectiveBonusCredits: getEffectiveBonusCredits(plan, now, userCreatedAt),
-    registrationPromoIsActive: isRegistrationPromoActive(plan, userCreatedAt, now),
-    registrationPromoRemainingHours: getRegistrationPromoRemainingHours(plan, userCreatedAt, now),
-    registrationPromoEndsAt: getRegistrationPromoEndsAt(plan, userCreatedAt, now),
+    effectivePriceCents: getEffectivePrice(plan, now, userCreatedAt, hasUsedPromo),
+    effectiveBonusCredits: getEffectiveBonusCredits(plan, now, userCreatedAt, hasUsedPromo),
+    registrationPromoIsActive: isRegistrationPromoActive(plan, userCreatedAt, now, hasUsedPromo),
+    registrationPromoRemainingHours: hasUsedPromo ? null : getRegistrationPromoRemainingHours(plan, userCreatedAt, now, hasUsedPromo),
+    registrationPromoEndsAt: hasUsedPromo ? null : getRegistrationPromoEndsAt(plan, userCreatedAt, now, hasUsedPromo),
   }));
 }

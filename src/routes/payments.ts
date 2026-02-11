@@ -59,7 +59,7 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
       userCreatedAt = userRow?.createdAt ?? null;
     }
 
-    const plans = await getActivePricingPlans(db, new Date(), userCreatedAt);
+    const plans = await getActivePricingPlans(db, new Date(), userCreatedAt, session?.user?.id);
     return {
       plans: plans.map((plan) => ({
         id: plan.id,
