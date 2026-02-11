@@ -422,6 +422,11 @@ export const barionCustomers = pgTable("barion_customers", {
 
 // Coupons for discounts
 export const couponType = pgEnum("coupon_type", ["percent", "amount"]);
+export const registrationPromoType = pgEnum("registration_promo_type", [
+  "percent",
+  "amount",
+  "bonus_credits",
+]);
 
 // Pricing plans for credit bundles
 export const pricingPlans = pgTable("pricing_plans", {
@@ -439,6 +444,10 @@ export const pricingPlans = pgTable("pricing_plans", {
   promoPriceCents: integer("promo_price_cents"), // Deprecated: kept for backward compatibility
   promoStartsAt: timestamp("promo_starts_at", { withTimezone: true }),
   promoEndsAt: timestamp("promo_ends_at", { withTimezone: true }),
+  registrationPromoEnabled: boolean("registration_promo_enabled").notNull().default(false),
+  registrationPromoType: registrationPromoType("registration_promo_type"), // "percent" | "amount" | "bonus_credits" | null
+  registrationPromoValue: integer("registration_promo_value"), // percent 1..100 OR amount in minor units OR bonus credits
+  registrationPromoValidHours: integer("registration_promo_valid_hours"), // Hours from user registration
   bonusAudioStars: integer("bonus_audio_stars").notNull().default(0), // Ajándék hangcsillagok
   bonusCredits: integer("bonus_credits").notNull().default(0), // Ajándék mesetallérok
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

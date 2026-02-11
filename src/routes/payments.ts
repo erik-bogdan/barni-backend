@@ -38,11 +38,28 @@ async function requireSession(headers: Headers, set: { status?: number | string 
   return session;
 }
 
+async function getOptionalSession(headers: Headers) {
+  return auth.api.getSession({ headers });
+}
+
 export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
   .decorate("logger", getLogger())
   // GET /pricing - Public endpoint
-  .get("/pricing", async () => {
-    const plans = await getActivePricingPlans(db);
+  .get("/pricing", async ({ request }) => {
+    const session = await getOptionalSession(request.headers);
+    let userCreatedAt: Date | null = null;
+
+    if (session?.user?.id) {
+      const [userRow] = await db
+        .select({ createdAt: user.createdAt })
+        .from(user)
+        .where(eq(user.id, session.user.id))
+        .limit(1);
+
+      userCreatedAt = userRow?.createdAt ?? null;
+    }
+
+    const plans = await getActivePricingPlans(db, new Date(), userCreatedAt);
     return {
       plans: plans.map((plan) => ({
         id: plan.id,
@@ -58,6 +75,13 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         promoPriceCents: plan.promoPriceCents,
         promoStartsAt: plan.promoStartsAt,
         promoEndsAt: plan.promoEndsAt,
+        registrationPromoEnabled: plan.registrationPromoEnabled,
+        registrationPromoType: plan.registrationPromoType,
+        registrationPromoValue: plan.registrationPromoValue,
+        registrationPromoValidHours: plan.registrationPromoValidHours,
+        registrationPromoIsActive: plan.registrationPromoIsActive,
+        registrationPromoRemainingHours: plan.registrationPromoRemainingHours,
+        registrationPromoEndsAt: plan.registrationPromoEndsAt,
         effectivePriceCents: plan.effectivePriceCents,
         bonusAudioStars: plan.bonusAudioStars ?? 0,
         bonusCredits: plan.bonusCredits ?? 0,
@@ -141,8 +165,20 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         return { error: "Pricing plan not found or inactive" };
       }
 
+      // Get user for registration-aware pricing and customer e-mail
+      const [userRow] = await db
+        .select({ email: user.email, createdAt: user.createdAt })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+
+      if (!userRow) {
+        set.status = 404;
+        return { error: "User not found" };
+      }
+
       // Calculate effective price - BACKEND AUTHORITY: price calculation
-      const unitPriceCents = getEffectivePrice(plan);
+      const unitPriceCents = getEffectivePrice(plan, new Date(), userRow.createdAt);
       const subtotalCents = unitPriceCents * quantity;
 
       // Validate and apply coupon if provided - BACKEND AUTHORITY: coupon validation
@@ -204,18 +240,6 @@ export const paymentsApi = new Elysia({ name: "payments", prefix: "/payments" })
         couponCode: coupon?.code || null,
         currency: plan.currency,
       }, "checkout.order_calculation");
-
-      // Get user email for Stripe customer
-      const [userRow] = await db
-        .select({ email: user.email })
-        .from(user)
-        .where(eq(user.id, userId))
-        .limit(1);
-
-      if (!userRow) {
-        set.status = 404;
-        return { error: "User not found" };
-      }
 
       // Create order
       logger.info({

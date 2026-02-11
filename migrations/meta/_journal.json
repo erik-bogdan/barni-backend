@@ -204,6 +204,13 @@
       "when": 1770371064324,
       "tag": "0028_orange_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1770715392230,
+      "tag": "0029_daily_lord_hawal",
+      "breakpoints": true
     }
   ]
 }

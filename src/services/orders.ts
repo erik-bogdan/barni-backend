@@ -1,7 +1,7 @@
 import { eq, and, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { orders, orderItems, payments, storyCreditTransactions, audioStarTransactions, pricingPlans, notifications } from "../../packages/db/src/schema";
-import type { PricingPlan } from "./pricing";
+import { orders, orderItems, payments, storyCreditTransactions, audioStarTransactions, pricingPlans, notifications, user } from "../../packages/db/src/schema";
+import { getEffectiveBonusCredits, type PricingPlan } from "./pricing";
 import type { Coupon } from "./coupons";
 import { getCurrentProviderType } from "../lib/payment-providers/factory";
 
@@ -218,7 +218,16 @@ export async function fulfillOrder(
 
     if (plan) {
       bonusAudioStars = plan.bonusAudioStars ?? 0;
-      bonusCredits = plan.bonusCredits ?? 0;
+      const [userRow] = await db
+        .select({ createdAt: user.createdAt })
+        .from(user)
+        .where(eq(user.id, order.userId))
+        .limit(1);
+      bonusCredits = getEffectiveBonusCredits(
+        plan,
+        order.createdAt ?? new Date(),
+        userRow?.createdAt ?? null,
+      );
     }
   }
 

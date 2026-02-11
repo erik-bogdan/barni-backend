@@ -938,6 +938,10 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
             promoPriceCents: body.promoPriceCents ?? null,
             promoStartsAt: body.promoStartsAt ? new Date(body.promoStartsAt) : null,
             promoEndsAt: body.promoEndsAt ? new Date(body.promoEndsAt) : null,
+            registrationPromoEnabled: body.registrationPromoEnabled ?? false,
+            registrationPromoType: body.registrationPromoType ?? null,
+            registrationPromoValue: body.registrationPromoValue ?? null,
+            registrationPromoValidHours: body.registrationPromoValidHours ?? null,
             bonusAudioStars: body.bonusAudioStars ?? 0,
             bonusCredits: body.bonusCredits ?? 0,
           })
@@ -968,6 +972,12 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         promoPriceCents: t.Optional(t.Nullable(t.Number())),
         promoStartsAt: t.Optional(t.Nullable(t.String())),
         promoEndsAt: t.Optional(t.Nullable(t.String())),
+        registrationPromoEnabled: t.Optional(t.Boolean()),
+        registrationPromoType: t.Optional(
+          t.Nullable(t.Union([t.Literal('percent'), t.Literal('amount'), t.Literal('bonus_credits')]))
+        ),
+        registrationPromoValue: t.Optional(t.Nullable(t.Number())),
+        registrationPromoValidHours: t.Optional(t.Nullable(t.Number())),
         bonusAudioStars: t.Optional(t.Number()),
         bonusCredits: t.Optional(t.Number()),
       }),
@@ -993,6 +1003,18 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
       }
       if (body.promoEndsAt !== undefined) {
         updateData.promoEndsAt = body.promoEndsAt ? new Date(body.promoEndsAt) : null
+      }
+      if (body.registrationPromoEnabled !== undefined) {
+        updateData.registrationPromoEnabled = body.registrationPromoEnabled
+      }
+      if (body.registrationPromoType !== undefined) {
+        updateData.registrationPromoType = body.registrationPromoType
+      }
+      if (body.registrationPromoValue !== undefined) {
+        updateData.registrationPromoValue = body.registrationPromoValue
+      }
+      if (body.registrationPromoValidHours !== undefined) {
+        updateData.registrationPromoValidHours = body.registrationPromoValidHours
       }
       if (body.bonusAudioStars !== undefined) updateData.bonusAudioStars = body.bonusAudioStars
       if (body.bonusCredits !== undefined) updateData.bonusCredits = body.bonusCredits
@@ -1033,6 +1055,12 @@ export const dash = new Elysia({ name: 'dash', prefix: '/admin' })
         promoPriceCents: t.Optional(t.Nullable(t.Number())),
         promoStartsAt: t.Optional(t.Nullable(t.String())),
         promoEndsAt: t.Optional(t.Nullable(t.String())),
+        registrationPromoEnabled: t.Optional(t.Boolean()),
+        registrationPromoType: t.Optional(
+          t.Nullable(t.Union([t.Literal('percent'), t.Literal('amount'), t.Literal('bonus_credits')]))
+        ),
+        registrationPromoValue: t.Optional(t.Nullable(t.Number())),
+        registrationPromoValidHours: t.Optional(t.Nullable(t.Number())),
         bonusAudioStars: t.Optional(t.Number()),
         bonusCredits: t.Optional(t.Number()),
       }),
